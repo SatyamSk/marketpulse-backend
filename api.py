@@ -504,28 +504,40 @@ Date: {datetime.now().strftime('%d %B %Y')}"""
 PIPELINE_SECRET = os.getenv("PIPELINE_SECRET", "marketpulse2024")
 
 class PipelineRequest(BaseModel):
-    secret: str
+    secret:      str
+    max_per_feed: int = 8   # default 8 per feed = ~40 total
 
 @app.post("/api/pipeline/run")
 def trigger_pipeline(req: PipelineRequest):
     if req.secret != PIPELINE_SECRET:
         raise HTTPException(status_code=401, detail="Invalid secret key.")
 
+    # Clamp between 3 and 20 per feed
+    max_per_feed = max(3, min(20, req.max_per_feed))
+    total_approx = max_per_feed * 5   # 5 feeds
+
     import subprocess, sys, threading
 
     def run():
         subprocess.run(
-            [sys.executable, os.path.join(DATA_DIR, "pipeline.py"), "--once"],
-            cwd=DATA_DIR
+            [
+                sys.executable,
+                os.path.join(DATA_DIR, "pipeline.py"),
+                "--once",
+                f"--max-per-feed={max_per_feed}",
+            ],
+            cwd=DATA_DIR,
         )
 
     thread = threading.Thread(target=run, daemon=True)
     thread.start()
 
     return {
-        "status":  "started",
-        "message": "Pipeline is running in background. Refresh data in ~2 minutes.",
-        "started_at": datetime.now().isoformat(),
+        "status":      "started",
+        "message":     f"Pipeline started — fetching up to {total_approx} headlines ({max_per_feed} per source). Refresh data in ~2 minutes.",
+        "started_at":  datetime.now().isoformat(),
+        "max_per_feed": max_per_feed,
+        "approx_total": total_approx,
     }
 
 @app.get("/api/pipeline/status")
