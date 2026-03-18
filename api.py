@@ -305,13 +305,33 @@ def generate_brief(request: Request, req: BriefRequest):
         messages=[
             {
                 "role": "system",
-                "content": """You are a senior Bloomberg market analyst writing a structured pre-market brief for Indian intraday traders.
-Write in exactly this format with these exact section headers. Use markdown bold for numbers and key terms.
-Be specific, direct, and actionable. No disclaimers. No fluff. Every sentence must contain a number or a named company/sector."""
+                "content": """You are a senior market strategist writing a forward-looking market outlook for Indian intraday traders.
+Frame everything as EXPECTED conditions — what is likely to happen, not what already happened.
+Use language like 'expected to', 'likely to', 'anticipated', 'watch for', 'probability of'.
+Use markdown bold for key numbers and sector names. No disclaimers. No fluff."""
             },
             {
                 "role": "user",
-                "content": f"""Write a pre-market brief using EXACTLY this structure:
+                "content": f"""Write a forward-looking market outlook using EXACTLY this structure:
+
+## Expected Regime: {req.regime.get('regime','')}
+(What this regime means for today's expected price action)
+
+## Nifty Expected Move
+(Specific expected direction with levels — e.g. "Expected gap-down open near 22,100. Watch 21,950 support.")
+
+## Highest Probability Risk Today
+(The single event most likely to move markets — quantify the expected impact)
+
+## Sector Outlook
+**Expected Underperformer:** (sector — why, with numbers)
+**Expected Outperformer:** (sector — why, with numbers)
+
+## Key Events to Watch
+(3 bullet points — what to monitor in the session ahead)
+
+## Trading Implication
+(One specific forward-looking call: what to expect and how to position)
 
 ## Market Regime: {req.regime.get('regime','')}
 (One sentence on what this means for today's session)
