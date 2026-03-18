@@ -204,6 +204,10 @@ def get_dashboard():
 
     high_risk = benchmark[benchmark["risk_level"] == "HIGH"]["sector"].tolist() if "risk_level" in benchmark.columns else []
 
+    # Load shock summary
+    shock_path = os.path.join(DATA_DIR, "shock_headlines.csv")
+    shock_headlines = to_records(pd.read_csv(shock_path)) if os.path.exists(shock_path) else []
+    
     return {
         "last_updated":      datetime.now().isoformat(),
         "market_regime":     regime,
@@ -216,6 +220,12 @@ def get_dashboard():
         "contagion_flows":   contagion,
         "correlation_matrix": correlation,
         "velocity_trend":    velocity_trend,
+        "shock_headlines":   shock_headlines,
+        "shock_counts": {
+            "major": len([h for h in shock_headlines if h.get("shock_status") == "Major Shock"]),
+            "shock": len([h for h in shock_headlines if h.get("shock_status") == "Shock"]),
+            "watch": len([h for h in shock_headlines if h.get("shock_status") == "Watch"]),
+        },
         "summary_stats": {
             "total_headlines":    len(headlines),
             "geopolitical_flags": len(geo_hl),
