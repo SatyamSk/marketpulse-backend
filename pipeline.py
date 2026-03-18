@@ -50,33 +50,41 @@ VALID_SENTIMENTS = {"positive", "negative", "neutral"}
 # ══════════════════════════════════════════════════════════
 # STEP 1 — FETCH NEWS (pure Python, zero AI)
 # ══════════════════════════════════════════════════════════
-
+def get_max_per_feed() -> int:
+    """Read --max-per-feed=N from command line args. Default 8."""
+    for arg in sys.argv:
+        if arg.startswith("--max-per-feed="):
+            try:
+                return max(3, min(20, int(arg.split("=")[1])))
+            except ValueError:
+                pass
+    return 8
 def fetch_news() -> list[dict]:
-    """
-    Pull headlines from RSS feeds.
-    Deduplicates by title. Captures URL for clickable links in frontend.
-    No AI involved — pure HTTP fetch and parse.
-    """
-    print("  Fetching news from RSS feeds...")
-    headlines  = []
-    seen       = set()
+    max_per_feed = get_max_per_feed()
+    total_approx = max_per_feed * len(RSS_FEEDS)
+    print(f"  Fetching news — {max_per_feed} per feed · ~{total_approx} total...")
+
+    headlines = []
+    seen      = set()
 
     for feed_url in RSS_FEEDS:
         try:
-            feed = feedparser.parse(feed_url)
-            for entry in feed.entries[:8]:
+            feed  = feedparser.parse(feed_url)
+            count = 0
+            for entry in feed.entries:
+                if count >= max_per_feed:
+                    break
                 title       = entry.get("title", "").strip()
                 description = entry.get("summary", entry.get("description", "")).strip()
                 url         = entry.get("link", entry.get("url", "")).strip()
 
-                # Skip too-short or duplicate titles
                 if not title or len(title) < 10:
                     continue
                 key = title[:80].lower()
                 if key in seen:
                     continue
-                seen.add(key)
 
+                seen.add(key)
                 headlines.append({
                     "title":       title,
                     "description": description[:600],
@@ -84,6 +92,7 @@ def fetch_news() -> list[dict]:
                     "published":   entry.get("published", datetime.now().isoformat()),
                     "url":         url,
                 })
+                count += 1
         except Exception as e:
             print(f"    Feed error ({feed_url[:45]}...): {e}")
 
