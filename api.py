@@ -91,39 +91,38 @@ def load_data():
     return pd.read_csv(hl_path), pd.read_csv(sec_path)
 
 def classify_regime(avg_nss: float, avg_risk: float) -> dict:
-    if avg_nss > 20 and avg_risk < 25:
+    if avg_nss > 20 and avg_risk < 20:
         return {
             "regime":            "Risk On",
             "description":       "Broad bullish sentiment, low systemic risk. Momentum trades favored.",
             "nifty_implication": "Gap-up open likely. Momentum trades have higher probability.",
             "watch":             "High-momentum sectors showing positive velocity.",
-            "avoid":             "Defensive over-positioning — not needed in Risk On conditions.",
+            "avoid":             "Defensive over-positioning not needed in Risk On conditions.",
         }
-    elif avg_nss < -20 and avg_risk > 45:
+    elif avg_nss < -20 and avg_risk > 35:
         return {
             "regime":            "Panic",
-            "description":       "Widespread negative sentiment with high systemic risk. Defensive positioning only.",
+            "description":       "Widespread negative sentiment with high systemic risk. Defensive only.",
             "nifty_implication": "Heavy selling pressure expected. Watch key support levels.",
-            "watch":             "Defensive sectors — Banking if NSS is stable there.",
+            "watch":             "Defensive sectors — Banking if NSS is stable.",
             "avoid":             "All high-beta positions. Reduce exposure immediately.",
         }
-    elif avg_nss > 0 and avg_risk > 35:
+    elif avg_nss > 0 and avg_risk > 25:
         return {
             "regime":            "Complacent",
-            "description":       "Positive headlines masking elevated underlying risk. Watch for sudden reversal.",
-            "nifty_implication": "Deceptively calm open possible. Risk of intraday reversal is elevated.",
-            "watch":             "Divergence signals — sectors where NSS and impact-weighted scores disagree.",
-            "avoid":             "Overleveraged positions. The risk is higher than headlines suggest.",
+            "description":       "Positive headlines masking elevated underlying risk. Watch for reversal.",
+            "nifty_implication": "Deceptively calm open possible. Reversal risk elevated.",
+            "watch":             "Divergence signals — sectors where NSS and impact-weighted disagree.",
+            "avoid":             "Overleveraged positions. Risk is higher than headlines suggest.",
         }
     else:
         return {
             "regime":            "Risk Off",
-            "description":       "Cautious market conditions. Capital preservation favored over momentum.",
+            "description":       "Cautious market conditions. Capital preservation favored.",
             "nifty_implication": "Flat to gap-down open likely. Avoid chasing early moves.",
-            "watch":             "Sectors with positive velocity — early signs of recovery.",
+            "watch":             "Sectors with positive velocity — early recovery signs.",
             "avoid":             "High-leverage positions and sectors with negative velocity.",
         }
-
 # ── STATUS ────────────────────────────────────────────────
 
 @app.get("/api/status")
