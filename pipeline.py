@@ -54,6 +54,7 @@ def fetch_news():
                     "description": description[:600],
                     "source": feed.feed.get("title", "Unknown"),
                     "published": entry.get("published", datetime.now().isoformat()),
+                    "url":         entry.get("link", entry.get("url", "")),
                 })
         except Exception as e:
             print(f"  Feed error ({feed_url[:40]}): {e}")
