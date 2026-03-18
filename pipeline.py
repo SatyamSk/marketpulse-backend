@@ -147,6 +147,10 @@ def calculate_metrics(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
         else "Watch"       if z > 0.5
         else "Normal"
     )
+    # Save shock summary for API
+    shock_summary = df[df["shock_status"].isin(["Shock", "Major Shock"])][["title", "sector", "sentiment", "impact_score", "z_score", "shock_status", "one_line_insight"]].sort_values("z_score", ascending=False)
+    shock_summary.to_csv(os.path.join(DATA_DIR, "shock_headlines.csv"), index=False)
+    print(f"  Shocks detected: {len(shock_summary)} ({len(df[df['shock_status']=='Major Shock'])} major)")
 
     # Sector-level Math
     sector_rows = []
