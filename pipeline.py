@@ -264,8 +264,23 @@ def run_pipeline():
     print("\nPIPELINE COMPLETE.")
 
 if __name__ == "__main__":
-    run_pipeline()
-    schedule.every(1).hours.do(run_pipeline)
-    while True:
-        schedule.run_pending()
-        time.sleep(60)
+    import sys
+
+    # Write lock file so API can detect it's running
+    lock_path = os.path.join(DATA_DIR, "pipeline.lock")
+
+    with open(lock_path, "w") as f:
+        f.write(datetime.now().isoformat())
+
+    try:
+        run_pipeline()
+    finally:
+        if os.path.exists(lock_path):
+            os.remove(lock_path)
+
+    # If --once flag passed (triggered from API), exit after one run
+    if "--once" not in sys.argv:
+        schedule.every(1).hours.do(run_pipeline)
+        while True:
+            schedule.run_pending()
+            time.sleep(60)sleep(60)
