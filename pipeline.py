@@ -131,10 +131,22 @@ def calculate_metrics(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     df["weighted_risk_score"] = (df["weighted_risk_score"] * 10).clip(0, 100).round(2)
 
     # Z-Score Shock
-    sector_mean = df.groupby("sector")["impact_score"].transform("mean")
-    sector_std  = df.groupby("sector")["impact_score"].transform("std").replace(0, 1).fillna(1.0)
-    df["z_score"] = ((df["impact_score"] - sector_mean) / sector_std).round(2)
-    df["shock_status"] = df["z_score"].apply(lambda z: "Major Shock" if z > 2.5 else "Shock" if z > 1.5 else "Normal")
+# CORRECT — global z-score across all headlines
+    # Uses overall mean and std so even single-sector headlines get proper scores
+    global_mean = df["impact_score"].astype(float).mean()
+    global_std  = df["impact_score"].astype(float).std()
+    if global_std == 0 or pd.isna(global_std):
+        global_std = 1.0
+    
+    df["z_score"] = ((df["impact_score"].astype(float) - global_mean) / global_std).round(2)
+    
+    # Python determines shock status — pure deterministic thresholds
+    df["shock_status"] = df["z_score"].apply(
+        lambda z: "Major Shock" if z > 2.0
+        else "Shock"       if z > 1.0
+        else "Watch"       if z > 0.5
+        else "Normal"
+    )
 
     # Sector-level Math
     sector_rows = []
