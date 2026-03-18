@@ -498,7 +498,68 @@ Date: {datetime.now().strftime('%d %B %Y')}"""
         "words_remaining": words_remaining,
         "word_limit":      CHAT_WORD_LIMIT,
     }
+# ── PIPELINE TRIGGER ─────────────────────────────────────
+# Simple secret key to prevent random people from triggering it
 
+PIPELINE_SECRET = os.getenv("PIPELINE_SECRET", "marketpulse2024")
+
+class PipelineRequest(BaseModel):
+    secret: str
+
+@app.post("/api/pipeline/run")
+def trigger_pipeline(req: PipelineRequest):
+    if req.secret != PIPELINE_SECRET:
+        raise HTTPException(status_code=401, detail="Invalid secret key.")
+
+    import subprocess, sys, threading
+
+    def run():
+        subprocess.run(
+            [sys.executable, os.path.join(DATA_DIR, "pipeline.py"), "--once"],
+            cwd=DATA_DIR
+        )
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+
+    return {
+        "status":  "started",
+        "message": "Pipeline is running in background. Refresh data in ~2 minutes.",
+        "started_at": datetime.now().isoformat(),
+    }
+
+@app.get("/api/pipeline/status")
+def pipeline_status():
+    """Check when pipeline last ran and what data exists."""
+    hl_path  = os.path.join(DATA_DIR, "latest_headlines.csv")
+    sec_path = os.path.join(DATA_DIR, "latest_sectors.csv")
+
+    hl_time  = None
+    sec_time = None
+    hl_count = 0
+
+    if os.path.exists(hl_path):
+        hl_time  = datetime.fromtimestamp(os.path.getmtime(hl_path)).isoformat()
+        hl_count = len(pd.read_csv(hl_path))
+
+    if os.path.exists(sec_path):
+        sec_time = datetime.fromtimestamp(os.path.getmtime(sec_path)).isoformat()
+
+    # Check if pipeline is currently running
+    is_running = False
+    lock_path  = os.path.join(DATA_DIR, "pipeline.lock")
+    if os.path.exists(lock_path):
+        # Lock older than 10 minutes = stale, ignore it
+        age = datetime.now().timestamp() - os.path.getmtime(lock_path)
+        is_running = age < 600
+
+    return {
+        "last_headlines_update": hl_time,
+        "last_sectors_update":   sec_time,
+        "headlines_count":       hl_count,
+        "is_running":            is_running,
+        "data_available":        os.path.exists(hl_path) and os.path.exists(sec_path),
+    }
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True)
