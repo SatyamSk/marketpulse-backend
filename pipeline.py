@@ -523,6 +523,8 @@ def run_pipeline():
 
 
 if __name__ == "__main__":
+    import sys
+
     lock_path = os.path.join(DATA_DIR, "pipeline.lock")
 
     with open(lock_path, "w") as f:
@@ -534,7 +536,4 @@ if __name__ == "__main__":
         if os.path.exists(lock_path):
             os.remove(lock_path)
 
-    # --once flag: run once and exit
-    # This is what the API trigger and manual runs use
-    if "--once" in sys.argv:
-        sys.exit(0)
+    sys.exit(0)
