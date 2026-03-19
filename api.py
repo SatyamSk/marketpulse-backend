@@ -504,7 +504,7 @@ PIPELINE_SECRET = os.getenv("PIPELINE_SECRET", "marketpulse2024")
 
 class PipelineRequest(BaseModel):
     secret:      str
-    max_per_feed: int = 8   # default 8 per feed = ~40 total
+    max_per_feed: int = 14   # default 8 per feed = ~40 total
 
 @app.post("/api/pipeline/run")
 def trigger_pipeline(req: PipelineRequest):
