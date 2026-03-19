@@ -836,10 +836,3 @@ if __name__ == "__main__":
             os.remove(lock_path)
 
     sys.exit(0)
-```
-
----
-
-Also add this to your `requirements.txt`:
-```
-python-dateutil
