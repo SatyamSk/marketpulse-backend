@@ -524,6 +524,7 @@ def run_pipeline():
 
 if __name__ == "__main__":
     lock_path = os.path.join(DATA_DIR, "pipeline.lock")
+
     with open(lock_path, "w") as f:
         f.write(datetime.now().isoformat())
 
@@ -533,11 +534,7 @@ if __name__ == "__main__":
         if os.path.exists(lock_path):
             os.remove(lock_path)
 
+    # --once flag: run once and exit
+    # This is what the API trigger and manual runs use
     if "--once" in sys.argv:
         sys.exit(0)
-
-    print("  Scheduling hourly runs. Ctrl+C to stop.")
-    schedule.every(1).hours.do(run_pipeline)
-    while True:
-        schedule.run_pending()
-        time.sleep(60)
