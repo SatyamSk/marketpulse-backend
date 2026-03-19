@@ -128,10 +128,10 @@ def get_max_per_feed() -> int:
     for arg in sys.argv:
         if arg.startswith("--max-per-feed="):
             try:
-                return max(3, min(50, int(arg.split("=")[1])))
+                return max(3, min(100, int(arg.split("=")[1]))) # Increased to 100
             except ValueError:
                 pass
-    return 12   # default 12 × 37 feeds ≈ 400 headlines
+    return 25   # Default 25 × 37 feeds ≈ 925 headlines
 
 def parse_publish_time(entry: dict) -> datetime:
     """Parse RSS publish time — fallback to now if unparseable."""
