@@ -15,12 +15,38 @@ load_dotenv()
 DATA_DIR = os.path.dirname(os.path.abspath(__file__))
 client   = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+# ── 15 unique feeds across 8 different sources ────────────
+# Multiple feeds per source = different topic coverage
+# If one feed goes down, others from same source still work
 RSS_FEEDS = [
+    # Economic Times — Markets, Economy, Tech, Startups
     "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms",
+    "https://economictimes.indiatimes.com/economy/rssfeeds/1373380680.cms",
+    "https://economictimes.indiatimes.com/tech/rssfeeds/13357263.cms",
     "https://economictimes.indiatimes.com/small-biz/startups/rssfeeds/13357270.cms",
+
+    # Livemint — Markets, Companies, Economy
     "https://www.livemint.com/rss/markets",
+    "https://www.livemint.com/rss/companies",
+    "https://www.livemint.com/rss/economy",
+
+    # Business Standard — Markets, Economy, Finance
     "https://www.business-standard.com/rss/markets-106.rss",
+    "https://www.business-standard.com/rss/economy-policy-101.rss",
+    "https://www.business-standard.com/rss/finance-103.rss",
+
+    # Moneycontrol — Market Reports + Latest News
     "https://www.moneycontrol.com/rss/marketreports.xml",
+    "https://www.moneycontrol.com/rss/latestnews.xml",
+
+    # Financial Express — Markets
+    "https://www.financialexpress.com/market/feed/",
+
+    # Inc42 — Indian Startups + Fintech
+    "https://inc42.com/feed/",
+
+    # Reuters India — Business News
+    "https://feeds.reuters.com/reuters/INbusinessNews",
 ]
 
 # Geopolitics removed — it is an event type, not a market sector
@@ -59,29 +85,40 @@ def get_max_per_feed() -> int:
 
 def fetch_news() -> list[dict]:
     max_per_feed = get_max_per_feed()
-    print(f"  Fetching — {max_per_feed} per feed · ~{max_per_feed * len(RSS_FEEDS)} total...")
+    print(f"  Fetching — {max_per_feed} per feed · {len(RSS_FEEDS)} sources · "
+          f"~{max_per_feed * len(RSS_FEEDS)} possible...")
 
-    headlines = []
-    seen      = set()
+    headlines  = []
+    seen       = set()
+    feed_stats = []
 
     for feed_url in RSS_FEEDS:
         try:
             feed  = feedparser.parse(feed_url)
             count = 0
+
+            # Skip if feed returned nothing useful
+            if not feed.entries:
+                print(f"    EMPTY   {feed_url[:60]}")
+                feed_stats.append((feed_url[:50], 0, "empty"))
+                continue
+
             for entry in feed.entries:
                 if count >= max_per_feed:
                     break
+
                 title       = entry.get("title", "").strip()
                 description = entry.get("summary", entry.get("description", "")).strip()
                 url         = entry.get("link", entry.get("url", "")).strip()
 
                 if not title or len(title) < 10:
                     continue
-                key = title[:80].lower()
-                if key in seen:
+
+                # Deduplicate on exact title
+                if title in seen:
                     continue
 
-                seen.add(key)
+                seen.add(title)
                 headlines.append({
                     "title":       title,
                     "description": description[:600],
@@ -90,10 +127,25 @@ def fetch_news() -> list[dict]:
                     "url":         url,
                 })
                 count += 1
-        except Exception as e:
-            print(f"    Feed error ({feed_url[:45]}): {e}")
 
-    print(f"  Fetched {len(headlines)} unique headlines from {len(RSS_FEEDS)} sources")
+            source_name = feed.feed.get("title", feed_url[:40])
+            print(f"    OK      {source_name[:45]:45} → {count} headlines")
+            feed_stats.append((source_name[:45], count, "ok"))
+
+        except Exception as e:
+            print(f"    FAILED  {feed_url[:60]} — {e}")
+            feed_stats.append((feed_url[:50], 0, f"error: {e}"))
+
+    # Summary
+    ok_feeds    = len([f for f in feed_stats if f[2] == "ok"])
+    failed_feeds = len([f for f in feed_stats if f[2] != "ok" and f[2] != "empty"])
+    empty_feeds  = len([f for f in feed_stats if f[2] == "empty"])
+
+    print(f"\n  ── Feed Summary ──────────────────────────────")
+    print(f"  OK: {ok_feeds} · Empty: {empty_feeds} · Failed: {failed_feeds}")
+    print(f"  Total unique headlines fetched: {len(headlines)}")
+    print(f"  ─────────────────────────────────────────────")
+
     return headlines
 
 
