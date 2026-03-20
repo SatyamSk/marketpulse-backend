@@ -285,5 +285,5 @@ def pipeline_status():
     }
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True)
+    # Lock file to tell API that pipeline is running
+    lock_path = "/tmp/pipeline.lock"
