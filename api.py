@@ -171,15 +171,26 @@ class ChatRequest(BaseModel):
 
 @app.post("/api/chat")
 def chat_endpoint(req: ChatRequest):
-    sector_ctx = "\n".join([f"• {s.get('sector','')} | Risk {s.get('avg_weighted_risk',0)} ({s.get('risk_level','')}) | CSI {s.get('composite_sentiment_index',0)}" for s in req.context_sectors])
-    hl_ctx = "\n".join([f"• [{h.get('sector','')}] {h.get('title','')} | Impact: {h.get('impact_score','')}/10 | {h.get('one_line_insight','')}" for h in req.context_headlines[:15]])
+    sector_ctx = "\n".join([
+        f"• {s.get('sector','')} | Risk {s.get('avg_weighted_risk',0)} ({s.get('risk_level','')}) | CSI {s.get('composite_sentiment_index',0)}"
+        for s in req.context_sectors
+    ])
+    hl_ctx = "\n".join([
+        f"• [{h.get('sector','')}] {h.get('title','')} | Impact: {h.get('impact_score','')}/10 | {h.get('one_line_insight','')}"
+        for h in req.context_headlines[:15]
+    ])
 
-    system_prompt = f"""You are the MarketPulse AI Copilot for Indian intraday traders.
-You answer questions based ONLY on the data below. Be punchy, actionable, and analytical.
-If asked about a stock not in the context, say "I don't see current data on that today."
-Date Context: {datetime.now().strftime('%d %B %Y')} (Data is strictly from the last 24-48 hours).
+    system_prompt = f"""You are MarketPulse AI — a sharp, friendly market intelligence assistant for Indian intraday traders.
 
-SECTOR DATA:
+BEHAVIOR RULES:
+1. For greetings, small talk, or general questions (hi, hello, how are you, what can you do, thanks, etc.) — respond naturally and conversationally. Keep it brief and warm.
+2. For ANY market-related question — answer strictly using the data provided below. Every number must come from this context. If a specific piece of market data is not available, say "I don't have that in today's data."
+3. Always end market answers with a concrete, forward-looking trading implication.
+4. Never make up stock prices, company names, or figures not in the data.
+
+TODAY'S MARKET DATA ({datetime.now().strftime('%d %B %Y')}):
+
+SECTOR SCORES:
 {sector_ctx}
 
 TOP HEADLINES:
@@ -192,7 +203,7 @@ TOP HEADLINES:
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=messages,
-        temperature=0.2,
+        temperature=0.3,
         max_tokens=400,
     )
     return {"answer": response.choices[0].message.content}
