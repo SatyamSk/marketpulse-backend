@@ -6,6 +6,7 @@ import os
 import sys
 import hashlib
 import concurrent.futures
+import traceback
 from datetime import datetime, timezone
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -161,8 +162,9 @@ def classify_headline(headline: dict) -> dict:
             "contrarian_flag": bool(res.get("contrarian_flag", False)),
             "contrarian_reason": str(res.get("contrarian_reason", ""))[:300],
         }
-    except Exception:
-        return {"sector": "Other", "sentiment": "neutral", "sentiment_confidence": 0.5, "impact_score": 5, "valence": 0.5, "arousal": 0.5, "geopolitical_risk": False, "affected_companies": [], "second_order_beneficiaries": [], "catalyst_type": "other", "price_direction": "neutral", "time_horizon": "intraday", "conviction": "low", "macro_sensitivity": "medium", "one_line_insight": "", "signal_reason": "", "contrarian_flag": False, "contrarian_reason": ""}
+    except Exception as e:
+        print(f"    [!] OpenAi Classification Error: {e}")
+        return {"sector": "Other", "sentiment": "neutral", "sentiment_confidence": 0.5, "impact_score": 5, "valence": 0.5, "arousal": 0.5, "geopolitical_risk": False, "affected_companies": [], "second_order_beneficiaries": [], "catalyst_type": "other", "price_direction": "neutral", "time_horizon": "intraday", "conviction": "low", "macro_sensitivity": "medium", "one_line_insight": "AI error.", "signal_reason": "", "contrarian_flag": False, "contrarian_reason": ""}
 
 def process_all_headlines(headlines: list) -> list:
     print(f"  Classifying {len(headlines)} headlines using High-Speed Threading...")
@@ -174,7 +176,8 @@ def process_all_headlines(headlines: list) -> list:
             try:
                 analyzed.append({**h, **future.result()})
                 print(f"    ✓ Analyzed: {h['title'][:50]}...")
-            except Exception as e: print(f"    [!] Failed: {e}")
+            except Exception as e: 
+                print(f"    [!] Failed to merge: {e}")
     return analyzed
 
 def calculate_metrics(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -201,15 +204,16 @@ def calculate_metrics(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
         
         avg_risk = round(float(group["weighted_risk_score"].mean()), 1)
         avg_impact = round(float(group["impact_score"].astype(float).mean()), 1)
-        momentum_score = round((float((group.get("price_direction", pd.Series([])) == "bullish").mean()) - float((group.get("price_direction", pd.Series([])) == "bearish").mean())) * 100, 1)
+        momentum_score = round((float((group.get("price_direction", pd.Series([])).eq("bullish")).mean()) - float((group.get("price_direction", pd.Series([])).eq("bearish")).mean())) * 100, 1)
 
+        # FIXED THE FATAL BUG HERE: Changed 'risk' to 'avg_risk'
         sector_rows.append({
             "sector": sector, "avg_weighted_risk": avg_risk, "sentiment_nss": nss, "composite_sentiment_index": csi,
             "sentiment_velocity": 0.0, "risk_level": "HIGH" if avg_risk >= 50 else "MEDIUM" if avg_risk >= 25 else "LOW",
             "avg_impact": avg_impact, "momentum_score": momentum_score,
             "divergence_flag": "High Divergence" if abs(nss - iws) > 30 else "Normal",
             "sector_classification": "Watch Closely" if avg_impact >= 5 and avg_risk >= 25 else "Monitor Risk",
-            "investment_signal": "BUY BIAS" if csi > 30 and risk < 25 and momentum_score > 20 else "NEUTRAL"
+            "investment_signal": "BUY BIAS" if csi > 30 and avg_risk < 25 and momentum_score > 20 else "NEUTRAL"
         })
     return df, pd.DataFrame(sector_rows)
 
@@ -221,7 +225,6 @@ def calculate_market_stress_index(headlines_df: pd.DataFrame, sector_df: pd.Data
     return {"msi": msi, "level": "Critical" if msi >= 75 else "High" if msi >= 50 else "Elevated" if msi >= 30 else "Low"}
 
 def save_all(headlines_df: pd.DataFrame, sector_df: pd.DataFrame, msi: dict):
-    # SUPABASE DATABASE CONNECTION
     DB_URL = os.getenv("DATABASE_URL")
     if DB_URL and DB_URL.startswith("postgres://"):
         DB_URL = DB_URL.replace("postgres://", "postgresql://", 1)
@@ -230,50 +233,69 @@ def save_all(headlines_df: pd.DataFrame, sector_df: pd.DataFrame, msi: dict):
         print("  [!] ERROR: DATABASE_URL missing. Cannot save to Supabase.")
         return
 
-    engine = create_engine(DB_URL)
-    run_date = datetime.now().strftime("%Y-%m-%d")
-    print("  Uploading data directly to Supabase PostgreSQL...")
-
-    headlines_df.astype(str).to_sql("latest_headlines", engine, if_exists="replace", index=False)
-    sector_df.astype(str).to_sql("latest_sectors", engine, if_exists="replace", index=False)
-    
-    pd.DataFrame([{"msi_data": json.dumps(msi)}]).to_sql("latest_msi", engine, if_exists="replace", index=False)
-    pd.DataFrame([{"last_run": datetime.now().isoformat()}]).to_sql("pipeline_status", engine, if_exists="replace", index=False)
-    
-    shock_cols = [c for c in ["title", "sector", "sentiment", "impact_score", "z_score", "shock_status", "one_line_insight", "geopolitical_risk", "url"] if c in headlines_df.columns]
-    headlines_df[headlines_df["shock_status"].isin(["Major Shock", "Shock", "Watch"])][shock_cols].astype(str).to_sql("shock_headlines", engine, if_exists="replace", index=False)
-    
-    headlines_df.assign(run_date=run_date).astype(str).to_sql("master_headlines", engine, if_exists="append", index=False)
-    sector_df.assign(run_date=run_date).astype(str).to_sql("master_sector_scores", engine, if_exists="append", index=False)
-    
     try:
-        master = pd.read_sql_table("master_sector_scores", engine)
-        if "composite_sentiment_index" in master.columns:
-            master["composite_sentiment_index"] = pd.to_numeric(master["composite_sentiment_index"])
-            trend = master.groupby(["run_date", "sector"])["composite_sentiment_index"].mean().reset_index()
-            trend["csi_3day_ma"] = trend.groupby("sector")["composite_sentiment_index"].transform(lambda x: x.rolling(3, min_periods=1).mean()).round(2)
-            trend.to_sql("sector_trend_analysis", engine, if_exists="replace", index=False)
-    except Exception as e: print(f"  Trend error: {e}")
-    print("  ✓ Supabase upload complete!")
+        engine = create_engine(DB_URL)
+        run_date = datetime.now().strftime("%Y-%m-%d")
+        print("  Uploading data directly to Supabase PostgreSQL...")
+
+        # Convert everything to string to prevent DB Type mismatches
+        headlines_df.astype(str).to_sql("latest_headlines", engine, if_exists="replace", index=False)
+        sector_df.astype(str).to_sql("latest_sectors", engine, if_exists="replace", index=False)
+        
+        pd.DataFrame([{"msi_data": json.dumps(msi)}]).to_sql("latest_msi", engine, if_exists="replace", index=False)
+        pd.DataFrame([{"last_run": datetime.now().isoformat()}]).to_sql("pipeline_status", engine, if_exists="replace", index=False)
+        
+        shock_cols = [c for c in ["title", "sector", "sentiment", "impact_score", "z_score", "shock_status", "one_line_insight", "geopolitical_risk", "url"] if c in headlines_df.columns]
+        if not headlines_df[headlines_df["shock_status"].isin(["Major Shock", "Shock", "Watch"])].empty:
+            headlines_df[headlines_df["shock_status"].isin(["Major Shock", "Shock", "Watch"])][shock_cols].astype(str).to_sql("shock_headlines", engine, if_exists="replace", index=False)
+        
+        headlines_df.assign(run_date=run_date).astype(str).to_sql("master_headlines", engine, if_exists="append", index=False)
+        sector_df.assign(run_date=run_date).astype(str).to_sql("master_sector_scores", engine, if_exists="append", index=False)
+        
+        try:
+            master = pd.read_sql_table("master_sector_scores", engine)
+            if "composite_sentiment_index" in master.columns:
+                master["composite_sentiment_index"] = pd.to_numeric(master["composite_sentiment_index"])
+                trend = master.groupby(["run_date", "sector"])["composite_sentiment_index"].mean().reset_index()
+                trend["csi_3day_ma"] = trend.groupby("sector")["composite_sentiment_index"].transform(lambda x: x.rolling(3, min_periods=1).mean()).round(2)
+                trend.to_sql("sector_trend_analysis", engine, if_exists="replace", index=False)
+        except Exception as e: 
+            print(f"  [!] Trend error (non-fatal): {e}")
+            
+        print("  ✓ Supabase upload complete!")
+    except Exception as e:
+        print(f"  [!] CRITICAL DATABASE UPLOAD ERROR: {e}")
+        traceback.print_exc()
 
 def run_pipeline():
     start_time = datetime.now()
     print(f"\n{'='*60}\nMARKETPULSE PIPELINE — {start_time.strftime('%Y-%m-%d %H:%M')}\n{'='*60}")
     
-    headlines = fetch_news()
-    if not headlines: return
-    
-    analyzed_headlines = process_all_headlines(headlines) # 10x Speed Threading!
-    df = pd.DataFrame(analyzed_headlines)
-    headlines_df, sector_df = calculate_metrics(df)
-    msi = calculate_market_stress_index(headlines_df, sector_df)
-    
-    save_all(headlines_df, sector_df, msi)
-    print("  PIPELINE COMPLETE.\n")
+    try:
+        headlines = fetch_news()
+        if not headlines: 
+            print("  [!] No headlines fetched. Aborting.")
+            return
+        
+        analyzed_headlines = process_all_headlines(headlines) 
+        if not analyzed_headlines:
+            print("  [!] AI Analysis failed on all headlines. Aborting.")
+            return
+
+        df = pd.DataFrame(analyzed_headlines)
+        headlines_df, sector_df = calculate_metrics(df)
+        msi = calculate_market_stress_index(headlines_df, sector_df)
+        
+        save_all(headlines_df, sector_df, msi)
+        print("  ✅ PIPELINE COMPLETE.\n")
+    except Exception as e:
+        print(f"  [!] FATAL PIPELINE ERROR: {e}")
+        traceback.print_exc()
 
 if __name__ == "__main__":
-    lock_path = "/tmp/pipeline.lock" # Linux /tmp hides it from auto-reload!
+    lock_path = "/tmp/pipeline.lock" 
     with open(lock_path, "w") as f: f.write(datetime.now().isoformat())
-    try: run_pipeline()
+    try: 
+        run_pipeline()
     finally:
         if os.path.exists(lock_path): os.remove(lock_path)
