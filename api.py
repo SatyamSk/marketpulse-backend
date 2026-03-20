@@ -270,7 +270,44 @@ def run_pipeline():
     
     save_all(headlines_df, sector_df, msi)
     print("  PIPELINE COMPLETE.\n")
+@app.post("/api/pipeline/run")
+def trigger_pipeline(req: PipelineRequest):
+    if req.secret != PIPELINE_SECRET: 
+        raise HTTPException(status_code=401, detail="Invalid secret key.")
+    
+    max_per_feed = max(3, min(50, req.max_per_feed))
+    total_approx = max_per_feed * 37
 
+    def run():
+        import traceback
+        print("\n🚀 BACKGROUND THREAD STARTED: Launching pipeline.py...")
+        try:
+            # We use "python" explicitly and capture ALL outputs and errors
+            result = subprocess.run(
+                ["python", os.path.join(DATA_DIR, "pipeline.py"), f"--max-per-feed={max_per_feed}"],
+                cwd=DATA_DIR,
+                capture_output=True,
+                text=True
+            )
+            
+            print("✅ PIPELINE SCRIPT FINISHED.")
+            if result.stdout:
+                print("\n📝 SCRIPT OUTPUT:\n", result.stdout)
+            
+            if result.stderr:
+                print("\n❌ SCRIPT ERRORS:\n", result.stderr)
+                
+        except Exception as e:
+            print(f"\n🔥 FATAL THREAD ERROR: {e}")
+            print(traceback.format_exc())
+
+    threading.Thread(target=run, daemon=True).start()
+
+    return {
+        "status": "started", 
+        "message": f"Pipeline diagnostic started. Check Render logs.", 
+        "started_at": datetime.now().isoformat()
+    }
 if __name__ == "__main__":
     lock_path = "/tmp/pipeline.lock" # Linux /tmp hides it from auto-reload!
     with open(lock_path, "w") as f: f.write(datetime.now().isoformat())
