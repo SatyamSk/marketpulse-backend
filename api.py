@@ -15,9 +15,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-DATA_DIR         = os.path.dirname(os.path.abspath(__file__))
-client           = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-PIPELINE_SECRET  = os.getenv("PIPELINE_SECRET", "marketpulse2024")
+DATA_DIR        = os.path.dirname(os.path.abspath(__file__))
+client          = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+PIPELINE_SECRET = os.getenv("PIPELINE_SECRET", "marketpulse2024")
 
 app = FastAPI(title="MarketPulse AI API")
 app.add_middleware(
@@ -33,6 +33,20 @@ chat_sessions: dict[str, dict]           = {}
 BRIEF_MAX    = 2
 CHAT_LIMIT   = 100
 COOLDOWN_HRS = 14
+
+
+def get_db_engine():
+    DB_URL = os.getenv("DATABASE_URL", "")
+    if not DB_URL:
+        return None
+    if DB_URL.startswith("postgres://"):
+        DB_URL = DB_URL.replace("postgres://", "postgresql://", 1)
+    try:
+        from sqlalchemy import create_engine
+        return create_engine(DB_URL)
+    except Exception as e:
+        print(f"  DB engine error: {e}")
+        return None
 
 
 def get_ip(request: Request) -> str:
@@ -60,11 +74,23 @@ def to_records(df: pd.DataFrame) -> list[dict]:
     return [{k: safe(v) for k, v in row.items()} for row in df.to_dict(orient="records")]
 
 
-def load_data():
+def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
+    engine = get_db_engine()
+    if engine is not None:
+        try:
+            headlines = pd.read_sql_table("latest_headlines", engine)
+            benchmark = pd.read_sql_table("latest_sectors",   engine)
+            return headlines, benchmark
+        except Exception as e:
+            print(f"  Supabase load failed: {e} — trying CSV fallback")
+
     hl_path  = os.path.join(DATA_DIR, "latest_headlines.csv")
     sec_path = os.path.join(DATA_DIR, "latest_sectors.csv")
     if not os.path.exists(hl_path) or not os.path.exists(sec_path):
-        raise HTTPException(status_code=404, detail="Pipeline data not found. Run pipeline first.")
+        raise HTTPException(
+            status_code=404,
+            detail="Pipeline data not found. Run the pipeline first."
+        )
     return pd.read_csv(hl_path), pd.read_csv(sec_path)
 
 
@@ -105,10 +131,19 @@ def classify_regime(avg_nss: float, avg_risk: float) -> dict:
 
 @app.get("/api/status")
 def status():
-    path     = os.path.join(DATA_DIR, "latest_sectors.csv")
+    engine   = get_db_engine()
     last_run = None
-    if os.path.exists(path):
-        last_run = datetime.fromtimestamp(os.path.getmtime(path)).isoformat()
+    if engine is not None:
+        try:
+            status_df = pd.read_sql_table("pipeline_status", engine)
+            if not status_df.empty:
+                last_run = status_df.iloc[0]["last_run"]
+        except Exception:
+            pass
+    if not last_run:
+        path = os.path.join(DATA_DIR, "latest_sectors.csv")
+        if os.path.exists(path):
+            last_run = datetime.fromtimestamp(os.path.getmtime(path)).isoformat()
     return {"status": "ok", "last_run": last_run, "server_time": datetime.now().isoformat()}
 
 
@@ -139,40 +174,89 @@ def get_dashboard():
             for _, r in geo_hl.groupby("sector")["impact_score"].mean().reset_index().iterrows()
         ]
 
-    correlation = {"sectors": [], "values": []}
-    master_path = os.path.join(DATA_DIR, "master_sector_scores.csv")
-    if os.path.exists(master_path):
-        master = pd.read_csv(master_path)
-        csi_col = "composite_sentiment_index"
-        if csi_col in master.columns and "run_date" in master.columns:
-            pivot = master.pivot_table(index="run_date", columns="sector", values=csi_col).fillna(0)
-            if len(pivot) >= 2:
-                corr = pivot.corr().round(2)
-                correlation = {
-                    "sectors": list(corr.columns),
-                    "values":  [[safe(v) for v in row] for row in corr.values.tolist()],
-                }
-
+    correlation    = {"sectors": [], "values": []}
     velocity_trend = []
-    trend_path = os.path.join(DATA_DIR, "sector_trend_analysis.csv")
-    if os.path.exists(trend_path):
-        trend = pd.read_csv(trend_path)
-        if "csi_3day_ma" in trend.columns and "run_date" in trend.columns:
-            pivot = trend.pivot_table(
-                index="run_date", columns="sector", values="csi_3day_ma"
-            ).fillna(0).reset_index().rename(columns={"run_date": "date"})
-            pivot["run"] = range(1, len(pivot) + 1)
-            velocity_trend = to_records(pivot)
+    shock_headlines = []
 
-    shock_path      = os.path.join(DATA_DIR, "shock_headlines.csv")
-    shock_headlines = to_records(pd.read_csv(shock_path)) if os.path.exists(shock_path) else []
-    shock_counts    = {
+    engine = get_db_engine()
+
+    if engine is not None:
+        try:
+            master  = pd.read_sql_table("master_sector_scores", engine)
+            csi_col = "composite_sentiment_index"
+            if csi_col in master.columns and "run_date" in master.columns:
+                pivot = master.pivot_table(index="run_date", columns="sector", values=csi_col).fillna(0)
+                if len(pivot) >= 2:
+                    corr = pivot.corr().round(2)
+                    correlation = {
+                        "sectors": list(corr.columns),
+                        "values":  [[safe(v) for v in row] for row in corr.values.tolist()],
+                    }
+        except Exception:
+            pass
+
+        try:
+            trend = pd.read_sql_table("sector_trend_analysis", engine)
+            if "csi_3day_ma" in trend.columns and "run_date" in trend.columns:
+                pivot = trend.pivot_table(
+                    index="run_date", columns="sector", values="csi_3day_ma"
+                ).fillna(0).reset_index().rename(columns={"run_date": "date"})
+                pivot["run"] = range(1, len(pivot) + 1)
+                velocity_trend = to_records(pivot)
+        except Exception:
+            pass
+
+        try:
+            shock_df = pd.read_sql_table("shock_headlines", engine)
+            shock_headlines = to_records(shock_df)
+        except Exception:
+            pass
+
+    else:
+        # CSV fallbacks
+        master_path = os.path.join(DATA_DIR, "master_sector_scores.csv")
+        if os.path.exists(master_path):
+            try:
+                master  = pd.read_csv(master_path)
+                csi_col = "composite_sentiment_index"
+                if csi_col in master.columns and "run_date" in master.columns:
+                    pivot = master.pivot_table(index="run_date", columns="sector", values=csi_col).fillna(0)
+                    if len(pivot) >= 2:
+                        corr = pivot.corr().round(2)
+                        correlation = {
+                            "sectors": list(corr.columns),
+                            "values":  [[safe(v) for v in row] for row in corr.values.tolist()],
+                        }
+            except Exception:
+                pass
+
+        trend_path = os.path.join(DATA_DIR, "sector_trend_analysis.csv")
+        if os.path.exists(trend_path):
+            try:
+                trend = pd.read_csv(trend_path)
+                if "csi_3day_ma" in trend.columns and "run_date" in trend.columns:
+                    pivot = trend.pivot_table(
+                        index="run_date", columns="sector", values="csi_3day_ma"
+                    ).fillna(0).reset_index().rename(columns={"run_date": "date"})
+                    pivot["run"] = range(1, len(pivot) + 1)
+                    velocity_trend = to_records(pivot)
+            except Exception:
+                pass
+
+        shock_path = os.path.join(DATA_DIR, "shock_headlines.csv")
+        if os.path.exists(shock_path):
+            try:
+                shock_headlines = to_records(pd.read_csv(shock_path))
+            except Exception:
+                pass
+
+    shock_counts = {
         "major": len([h for h in shock_headlines if h.get("shock_status") == "Major Shock"]),
         "shock": len([h for h in shock_headlines if h.get("shock_status") == "Shock"]),
         "watch": len([h for h in shock_headlines if h.get("shock_status") == "Watch"]),
     }
 
-    msi = {}
+    msi      = {}
     msi_path = os.path.join(DATA_DIR, "latest_msi.json")
     if os.path.exists(msi_path):
         with open(msi_path) as f:
@@ -181,26 +265,26 @@ def get_dashboard():
     high_risk = benchmark[benchmark["risk_level"] == "HIGH"]["sector"].tolist() if "risk_level" in benchmark.columns else []
 
     return {
-        "last_updated":       datetime.now().isoformat(),
-        "market_regime":      regime,
-        "benchmark":          to_records(benchmark),
-        "headlines":          to_records(
+        "last_updated":        datetime.now().isoformat(),
+        "market_regime":       regime,
+        "benchmark":           to_records(benchmark),
+        "headlines":           to_records(
             headlines.sort_values("impact_score", ascending=False)
             if "impact_score" in headlines.columns else headlines
         ),
-        "pareto":             to_records(pareto_df[["sector", "avg_weighted_risk", "cumulative_pct"]]),
-        "contagion_flows":    contagion,
-        "correlation_matrix": correlation,
-        "velocity_trend":     velocity_trend,
-        "shock_headlines":    shock_headlines,
-        "shock_counts":       shock_counts,
+        "pareto":              to_records(pareto_df[["sector", "avg_weighted_risk", "cumulative_pct"]]),
+        "contagion_flows":     contagion,
+        "correlation_matrix":  correlation,
+        "velocity_trend":      velocity_trend,
+        "shock_headlines":     shock_headlines,
+        "shock_counts":        shock_counts,
         "market_stress_index": msi,
         "summary_stats": {
-            "total_headlines":    len(headlines),
+            "total_headlines":   len(headlines),
             "geopolitical_flags": len(geo_hl),
-            "high_risk_sectors":  high_risk,
-            "avg_nss":            round(avg_nss, 1),
-            "avg_risk":           round(avg_risk, 1),
+            "high_risk_sectors": high_risk,
+            "avg_nss":           round(avg_nss, 1),
+            "avg_risk":          round(avg_risk, 1),
         },
     }
 
@@ -215,13 +299,16 @@ def get_sector(sector_name: str):
     return {
         "sector":    sector_name,
         "metrics":   to_records(sector_bm)[0],
-        "headlines": to_records(sector_hl.sort_values("impact_score", ascending=False) if "impact_score" in sector_hl.columns else sector_hl),
+        "headlines": to_records(
+            sector_hl.sort_values("impact_score", ascending=False)
+            if "impact_score" in sector_hl.columns else sector_hl
+        ),
     }
 
 
 @app.get("/api/brief/status")
 def brief_status(request: Request):
-    ip = get_ip(request)
+    ip     = get_ip(request)
     now    = datetime.now()
     cutoff = now.replace(hour=0, minute=0, second=0, microsecond=0)
     brief_usage[ip] = [t for t in brief_usage[ip] if t >= cutoff]
@@ -238,7 +325,7 @@ class BriefRequest(BaseModel):
 
 @app.post("/api/brief")
 def generate_brief(request: Request, req: BriefRequest):
-    ip = get_ip(request)
+    ip     = get_ip(request)
     now    = datetime.now()
     cutoff = now.replace(hour=0, minute=0, second=0, microsecond=0)
     brief_usage[ip] = [t for t in brief_usage[ip] if t >= cutoff]
@@ -247,18 +334,19 @@ def generate_brief(request: Request, req: BriefRequest):
 
     if remaining <= 0:
         raise HTTPException(status_code=429, detail={
-            "error": "daily_limit_reached",
+            "error":   "daily_limit_reached",
             "message": "Both daily brief generations used. Resets at midnight.",
             "used": used, "limit": BRIEF_MAX, "remaining": 0,
         })
 
     brief_usage[ip].append(datetime.now())
-    _, used_now, remaining_now = len(brief_usage[ip]), len(brief_usage[ip]), max(0, BRIEF_MAX - len(brief_usage[ip]))
+    used_now      = len(brief_usage[ip])
+    remaining_now = max(0, BRIEF_MAX - used_now)
 
     hl_lines = []
     for h in req.top_headlines[:8]:
         shock = h.get("shock_status", "Normal")
-        tag   = " 🚨 MAJOR SHOCK" if shock == "Major Shock" else " ⚠ SHOCK" if shock == "Shock" else ""
+        tag   = " MAJOR SHOCK" if shock == "Major Shock" else " SHOCK" if shock == "Shock" else ""
         hl_lines.append(
             f"• [{h.get('sector','')}] {h.get('title','')} "
             f"(Impact: {h.get('impact_score','')}/10, {str(h.get('sentiment','')).upper()}{tag})"
@@ -348,16 +436,16 @@ def chat(request: Request, req: ChatRequest):
         if datetime.now() < session.get("cooldown_until", datetime.now()):
             mins = int((session["cooldown_until"] - datetime.now()).total_seconds() / 60)
             raise HTTPException(status_code=429, detail={
-                "error": "cooldown_active",
-                "message": f"Word limit reached. Available again in {mins // 60}h {mins % 60}m.",
+                "error":             "cooldown_active",
+                "message":           f"Word limit reached. Available again in {mins // 60}h {mins % 60}m.",
                 "minutes_remaining": mins,
             })
 
     word_count = len(req.message.split())
     if word_count > CHAT_LIMIT:
         raise HTTPException(status_code=400, detail={
-            "error": "message_too_long",
-            "message": f"Message is {word_count} words. Max is {CHAT_LIMIT}.",
+            "error":      "message_too_long",
+            "message":    f"Message is {word_count} words. Max is {CHAT_LIMIT}.",
             "word_count": word_count, "limit": CHAT_LIMIT,
         })
 
@@ -369,9 +457,9 @@ def chat(request: Request, req: ChatRequest):
         cooldown_until = datetime.now() + timedelta(hours=COOLDOWN_HRS)
         chat_sessions[ip] = {"cooldown_until": cooldown_until}
         raise HTTPException(status_code=429, detail={
-            "error": "session_limit_reached",
-            "message": f"Used {total_words} words. 14-hour cooldown activated.",
-            "total_words": total_words, "limit": CHAT_LIMIT,
+            "error":          "session_limit_reached",
+            "message":        f"Used {total_words} words. 14-hour cooldown activated.",
+            "total_words":    total_words, "limit": CHAT_LIMIT,
             "cooldown_until": cooldown_until.isoformat(),
         })
 
@@ -404,7 +492,7 @@ HEADLINES:
 
 Date: {datetime.now().strftime('%d %B %Y')}"""
 
-    messages = [{"role": "system", "content": system_prompt}]
+    messages  = [{"role": "system", "content": system_prompt}]
     messages += [{"role": m["role"], "content": m["content"]} for m in req.history[-6:]]
     messages.append({"role": "user", "content": req.message})
 
@@ -426,29 +514,39 @@ Date: {datetime.now().strftime('%d %B %Y')}"""
 
 @app.get("/api/pipeline/status")
 def pipeline_status():
-    hl_path  = os.path.join(DATA_DIR, "latest_headlines.csv")
-    sec_path = os.path.join(DATA_DIR, "latest_sectors.csv")
     hl_time  = None
     hl_count = 0
 
-    if os.path.exists(hl_path):
-        hl_time  = datetime.fromtimestamp(os.path.getmtime(hl_path)).isoformat()
+    engine = get_db_engine()
+    if engine is not None:
         try:
-            hl_count = len(pd.read_csv(hl_path))
+            status_df = pd.read_sql_table("pipeline_status", engine)
+            if not status_df.empty:
+                hl_time = status_df.iloc[0]["last_run"]
+            hl_count = len(pd.read_sql_table("latest_headlines", engine))
         except Exception:
-            hl_count = 0
+            pass
+
+    if not hl_time:
+        hl_path = os.path.join(DATA_DIR, "latest_headlines.csv")
+        if os.path.exists(hl_path):
+            hl_time = datetime.fromtimestamp(os.path.getmtime(hl_path)).isoformat()
+            try:
+                hl_count = len(pd.read_csv(hl_path))
+            except Exception:
+                pass
 
     is_running = False
-    lock_path  = os.path.join(DATA_DIR, "pipeline.lock")
+    lock_path  = "/tmp/pipeline.lock"
     if os.path.exists(lock_path):
-        age = datetime.now().timestamp() - os.path.getmtime(lock_path)
+        age        = datetime.now().timestamp() - os.path.getmtime(lock_path)
         is_running = age < 600
 
     return {
         "last_headlines_update": hl_time,
         "headlines_count":       hl_count,
         "is_running":            is_running,
-        "data_available":        os.path.exists(hl_path) and os.path.exists(sec_path),
+        "data_available":        hl_count > 0,
     }
 
 
@@ -467,8 +565,12 @@ def trigger_pipeline(req: PipelineRequest):
 
     def run():
         subprocess.run(
-            [sys.executable, os.path.join(DATA_DIR, "pipeline.py"),
-             "--once", f"--max-per-feed={max_per_feed}"],
+            [
+                sys.executable,
+                os.path.join(DATA_DIR, "pipeline.py"),
+                "--once",
+                f"--max-per-feed={max_per_feed}",
+            ],
             cwd=DATA_DIR,
         )
 
@@ -476,7 +578,7 @@ def trigger_pipeline(req: PipelineRequest):
 
     return {
         "status":       "started",
-        "message":      f"Pipeline started — fetching up to {total_approx} headlines from 37 sources. Check status in ~2 minutes.",
+        "message":      f"Pipeline started — fetching up to {total_approx} headlines from 37 sources.",
         "started_at":   datetime.now().isoformat(),
         "max_per_feed": max_per_feed,
         "approx_total": total_approx,
@@ -485,6 +587,4 @@ def trigger_pipeline(req: PipelineRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True)
-
-
+    uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=False)
