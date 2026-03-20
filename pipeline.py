@@ -1,3 +1,4 @@
+from sqlalchemy import create_engine
 import feedparser
 import pandas as pd
 import numpy as np
@@ -645,92 +646,47 @@ def calculate_market_stress_index(
 # ══════════════════════════════════════════════════════════
 
 def save_all(headlines_df: pd.DataFrame, sector_df: pd.DataFrame, msi: dict):
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
     run_date  = datetime.now().strftime("%Y-%m-%d")
+    
+    DB_URL = os.getenv("DATABASE_URL")
+    if DB_URL and DB_URL.startswith("postgres://"):
+        DB_URL = DB_URL.replace("postgres://", "postgresql://", 1)
+        
+    if not DB_URL:
+        print("  ERROR: DATABASE_URL not found. Cannot save to cloud.")
+        return
 
-    # Latest files — API reads these
-    headlines_df.to_csv(os.path.join(DATA_DIR, "latest_headlines.csv"), index=False)
-    sector_df.to_csv(os.path.join(DATA_DIR,    "latest_sectors.csv"),   index=False)
-
-    # Market stress index
-    import json as _json
-    with open(os.path.join(DATA_DIR, "latest_msi.json"), "w") as f:
-        _json.dump(msi, f)
-
-    # Shock headlines
-    shock_cols = [c for c in [
-        "title", "sector", "sentiment", "impact_score", "z_score",
-        "shock_status", "one_line_insight", "geopolitical_risk",
-        "url", "source", "hours_old", "catalyst_type", "signal_decay",
-    ] if c in headlines_df.columns]
-
-    headlines_df[
-        headlines_df["shock_status"].isin(["Major Shock", "Shock", "Watch"])
-    ][shock_cols].sort_values("z_score", ascending=False).to_csv(
-        os.path.join(DATA_DIR, "shock_headlines.csv"), index=False
-    )
-
-    # Govt/PIB headlines separately
-    if "is_govt_source" in headlines_df.columns:
-        govt_cols = [c for c in [
-            "title", "sector", "sentiment", "impact_score",
-            "catalyst_type", "one_line_insight", "url",
-            "source", "hours_old", "affected_companies",
-        ] if c in headlines_df.columns]
-        headlines_df[
-            headlines_df["is_govt_source"].apply(bool)
-        ][govt_cols].to_csv(
-            os.path.join(DATA_DIR, "govt_headlines.csv"), index=False
-        )
-
-    # Timestamped snapshots
-    headlines_df.to_csv(
-        os.path.join(DATA_DIR, f"headlines_analyzed_{timestamp}.csv"), index=False
-    )
-    sector_df.to_csv(
-        os.path.join(DATA_DIR, f"sector_benchmark_{timestamp}.csv"), index=False
-    )
-
-    # Master historical files
-    for df_save, filename in [
-        (headlines_df.assign(run_date=run_date), "master_headlines.csv"),
-        (sector_df.assign(run_date=run_date),    "master_sector_scores.csv"),
-    ]:
-        path = os.path.join(DATA_DIR, filename)
-        if os.path.exists(path):
-            try:
-                combined = pd.concat(
-                    [pd.read_csv(path), df_save], ignore_index=True
-                )
-                combined.to_csv(path, index=False)
-            except Exception as e:
-                print(f"  Master append error ({filename}): {e}")
-                df_save.to_csv(path, index=False)
-        else:
-            df_save.to_csv(path, index=False)
-
-    # Trend analysis
-    master_path = os.path.join(DATA_DIR, "master_sector_scores.csv")
-    if os.path.exists(master_path):
-        try:
-            master = pd.read_csv(master_path)
-            if "composite_sentiment_index" in master.columns:
-                trend = (
-                    master
-                    .groupby(["run_date", "sector"])["composite_sentiment_index"]
-                    .mean().reset_index()
-                )
-                trend["csi_3day_ma"] = (
-                    trend.groupby("sector")["composite_sentiment_index"]
-                    .transform(lambda x: x.rolling(3, min_periods=1).mean())
-                    .round(2)
-                )
-                trend.to_csv(
-                    os.path.join(DATA_DIR, "sector_trend_analysis.csv"), index=False
-                )
-        except Exception as e:
-            print(f"  Trend error: {e}")
-
+    engine = create_engine(DB_URL)
+    print("  Uploading data to Supabase PostgreSQL...")
+    
+    # 1. Save Latest State
+    headlines_df.to_sql("latest_headlines", engine, if_exists="replace", index=False)
+    sector_df.to_sql("latest_sectors", engine, if_exists="replace", index=False)
+    
+    # 2. Save Pipeline Status (so the dashboard knows when it ran)
+    status_df = pd.DataFrame([{"last_run": datetime.now().isoformat()}])
+    status_df.to_sql("pipeline_status", engine, if_exists="replace", index=False)
+    
+    # 3. Save Shock Headlines
+    shock_cols = [c for c in ["title", "sector", "sentiment", "impact_score", "z_score", "shock_status", "one_line_insight", "geopolitical_risk", "url", "source", "hours_old", "catalyst_type", "signal_decay"] if c in headlines_df.columns]
+    shock_df = headlines_df[headlines_df["shock_status"].isin(["Major Shock", "Shock", "Watch"])][shock_cols].sort_values("z_score", ascending=False)
+    shock_df.to_sql("shock_headlines", engine, if_exists="replace", index=False)
+    
+    # 4. Save Historical Data (Appends forever without deleting)
+    headlines_df.assign(run_date=run_date).to_sql("master_headlines", engine, if_exists="append", index=False)
+    sector_df.assign(run_date=run_date).to_sql("master_sector_scores", engine, if_exists="append", index=False)
+    
+    # 5. Calculate & Save Velocity Trend
+    try:
+        master = pd.read_sql_table("master_sector_scores", engine)
+        if "composite_sentiment_index" in master.columns:
+            trend = master.groupby(["run_date", "sector"])["composite_sentiment_index"].mean().reset_index()
+            trend["csi_3day_ma"] = trend.groupby("sector")["composite_sentiment_index"].transform(lambda x: x.rolling(3, min_periods=1).mean()).round(2)
+            trend.to_sql("sector_trend_analysis", engine, if_exists="replace", index=False)
+    except Exception as e:
+        print(f"  Trend generation skipped (normal on first run): {e}")
+        
+    print("  Supabase upload complete! Data is permanently safe.")
 
 # ══════════════════════════════════════════════════════════
 # MAIN
