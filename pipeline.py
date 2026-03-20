@@ -16,43 +16,43 @@ DATA_DIR = os.path.dirname(os.path.abspath(__file__))
 client   = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 RSS_FEEDS = [
-    ("https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms",      "ET Markets"),
-    ("https://economictimes.indiatimes.com/economy/rssfeeds/1373380680.cms",      "ET Economy"),
-    ("https://economictimes.indiatimes.com/tech/rssfeeds/13357263.cms",           "ET Tech"),
+    ("https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms",         "ET Markets"),
+    ("https://economictimes.indiatimes.com/economy/rssfeeds/1373380680.cms",         "ET Economy"),
+    ("https://economictimes.indiatimes.com/tech/rssfeeds/13357263.cms",              "ET Tech"),
     ("https://economictimes.indiatimes.com/small-biz/startups/rssfeeds/13357270.cms","ET Startups"),
-    ("https://economictimes.indiatimes.com/industry/rssfeeds/13352306.cms",       "ET Industry"),
-    ("https://www.livemint.com/rss/markets",   "Livemint Markets"),
-    ("https://www.livemint.com/rss/companies", "Livemint Companies"),
-    ("https://www.livemint.com/rss/economy",   "Livemint Economy"),
-    ("https://www.livemint.com/rss/politics",  "Livemint Politics"),
-    ("https://www.business-standard.com/rss/markets-106.rss",        "BS Markets"),
-    ("https://www.business-standard.com/rss/economy-policy-101.rss", "BS Economy"),
-    ("https://www.business-standard.com/rss/finance-103.rss",        "BS Finance"),
-    ("https://www.business-standard.com/rss/companies-101.rss",      "BS Companies"),
-    ("https://www.moneycontrol.com/rss/marketreports.xml", "MC Market Reports"),
-    ("https://www.moneycontrol.com/rss/latestnews.xml",    "MC Latest News"),
-    ("https://www.moneycontrol.com/rss/business.xml",      "MC Business"),
-    ("https://www.financialexpress.com/market/feed/",  "Financial Express Markets"),
-    ("https://www.financialexpress.com/economy/feed/", "Financial Express Economy"),
-    ("https://www.thehindubusinessline.com/markets/?service=rss",   "BL Markets"),
-    ("https://www.thehindubusinessline.com/economy/?service=rss",   "BL Economy"),
-    ("https://www.thehindubusinessline.com/companies/?service=rss", "BL Companies"),
-    ("https://pib.gov.in/RssMain.aspx?ModId=6&Lang=1&Regid=3",   "PIB Economy"),
-    ("https://pib.gov.in/RssMain.aspx?ModId=37&Lang=1&Regid=3",  "PIB Commerce"),
-    ("https://pib.gov.in/RssMain.aspx?ModId=25&Lang=1&Regid=3",  "PIB Finance"),
-    ("https://pib.gov.in/RssMain.aspx?ModId=3&Lang=1&Regid=3",   "PIB Infrastructure"),
-    ("https://pib.gov.in/RssMain.aspx?ModId=14&Lang=1&Regid=3",  "PIB Defence"),
-    ("https://www.rbi.org.in/scripts/rss.aspx",                   "RBI"),
-    ("https://www.sebi.gov.in/sebi_data/rss/sebi_news.xml",       "SEBI"),
-    ("https://inc42.com/feed/",              "Inc42"),
-    ("https://entrackr.com/feed/",           "Entrackr"),
-    ("https://yourstory.com/feed",           "YourStory"),
-    ("https://mercomindia.com/feed/",        "Mercom India"),
-    ("https://www.constructionworld.in/feed","Construction World"),
-    ("https://www.cio.in/rss.xml",           "CIO India"),
-    ("https://feeds.reuters.com/reuters/INbusinessNews", "Reuters India"),
-    ("https://feeds.bbci.co.uk/news/business/rss.xml",  "BBC Business"),
-    ("https://www.thehindu.com/business/Economy/feeder/default.rss", "The Hindu Economy"),
+    ("https://economictimes.indiatimes.com/industry/rssfeeds/13352306.cms",          "ET Industry"),
+    ("https://www.livemint.com/rss/markets",                                         "Livemint Markets"),
+    ("https://www.livemint.com/rss/companies",                                       "Livemint Companies"),
+    ("https://www.livemint.com/rss/economy",                                         "Livemint Economy"),
+    ("https://www.livemint.com/rss/politics",                                        "Livemint Politics"),
+    ("https://www.business-standard.com/rss/markets-106.rss",                        "BS Markets"),
+    ("https://www.business-standard.com/rss/economy-policy-101.rss",                 "BS Economy"),
+    ("https://www.business-standard.com/rss/finance-103.rss",                        "BS Finance"),
+    ("https://www.business-standard.com/rss/companies-101.rss",                      "BS Companies"),
+    ("https://www.moneycontrol.com/rss/marketreports.xml",                           "MC Market Reports"),
+    ("https://www.moneycontrol.com/rss/latestnews.xml",                              "MC Latest News"),
+    ("https://www.moneycontrol.com/rss/business.xml",                                "MC Business"),
+    ("https://www.financialexpress.com/market/feed/",                                "Financial Express Markets"),
+    ("https://www.financialexpress.com/economy/feed/",                               "Financial Express Economy"),
+    ("https://www.thehindubusinessline.com/markets/?service=rss",                    "BL Markets"),
+    ("https://www.thehindubusinessline.com/economy/?service=rss",                    "BL Economy"),
+    ("https://www.thehindubusinessline.com/companies/?service=rss",                  "BL Companies"),
+    ("https://pib.gov.in/RssMain.aspx?ModId=6&Lang=1&Regid=3",                      "PIB Economy"),
+    ("https://pib.gov.in/RssMain.aspx?ModId=37&Lang=1&Regid=3",                     "PIB Commerce"),
+    ("https://pib.gov.in/RssMain.aspx?ModId=25&Lang=1&Regid=3",                     "PIB Finance"),
+    ("https://pib.gov.in/RssMain.aspx?ModId=3&Lang=1&Regid=3",                      "PIB Infrastructure"),
+    ("https://pib.gov.in/RssMain.aspx?ModId=14&Lang=1&Regid=3",                     "PIB Defence"),
+    ("https://www.rbi.org.in/scripts/rss.aspx",                                      "RBI"),
+    ("https://www.sebi.gov.in/sebi_data/rss/sebi_news.xml",                          "SEBI"),
+    ("https://inc42.com/feed/",                                                       "Inc42"),
+    ("https://entrackr.com/feed/",                                                    "Entrackr"),
+    ("https://yourstory.com/feed",                                                    "YourStory"),
+    ("https://mercomindia.com/feed/",                                                 "Mercom India"),
+    ("https://www.constructionworld.in/feed",                                         "Construction World"),
+    ("https://www.cio.in/rss.xml",                                                    "CIO India"),
+    ("https://feeds.reuters.com/reuters/INbusinessNews",                              "Reuters India"),
+    ("https://feeds.bbci.co.uk/news/business/rss.xml",                               "BBC Business"),
+    ("https://www.thehindu.com/business/Economy/feeder/default.rss",                 "The Hindu Economy"),
 ]
 
 SECTOR_WEIGHTS = {
@@ -69,29 +69,43 @@ SECTOR_WEIGHTS = {
 }
 
 CATALYST_WEIGHTS = {
-    "government_contract":  1.7,
-    "policy_change":        1.6,
-    "pib_announcement":     1.6,
-    "rbi_action":           1.5,
-    "sebi_action":          1.5,
-    "fii_flow":             1.4,
-    "capex_announcement":   1.4,
-    "earnings":             1.3,
-    "sector_tailwind":      1.2,
-    "regulatory":           1.1,
-    "management_change":    1.0,
-    "global_event":         0.9,
-    "other":                0.7,
+    "government_contract": 1.7,
+    "policy_change":       1.6,
+    "pib_announcement":    1.6,
+    "rbi_action":          1.5,
+    "sebi_action":         1.5,
+    "fii_flow":            1.4,
+    "capex_announcement":  1.4,
+    "earnings":            1.3,
+    "sector_tailwind":     1.2,
+    "regulatory":          1.1,
+    "management_change":   1.0,
+    "global_event":        0.9,
+    "other":               0.7,
 }
 
 SIGNAL_HALF_LIFE = {
-    "intraday":           4,
-    "swing_2_5days":      48,
-    "positional_weeks":   168,
+    "intraday":         4,
+    "swing_2_5days":    48,
+    "positional_weeks": 168,
 }
 
 VALID_SECTORS    = set(SECTOR_WEIGHTS.keys())
 VALID_SENTIMENTS = {"positive", "negative", "neutral"}
+
+
+def get_db_engine():
+    DB_URL = os.getenv("DATABASE_URL", "")
+    if not DB_URL:
+        return None
+    if DB_URL.startswith("postgres://"):
+        DB_URL = DB_URL.replace("postgres://", "postgresql://", 1)
+    try:
+        from sqlalchemy import create_engine
+        return create_engine(DB_URL)
+    except Exception as e:
+        print(f"  DB engine error: {e}")
+        return None
 
 
 def get_max_per_feed() -> int:
@@ -139,6 +153,7 @@ def fetch_news() -> list[dict]:
             for entry in feed.entries:
                 if count >= max_per_feed:
                     break
+
                 title       = entry.get("title", "").strip()
                 description = entry.get("summary", entry.get("description", "")).strip()
                 url         = entry.get("link", entry.get("url", "")).strip()
@@ -185,8 +200,8 @@ def fetch_news() -> list[dict]:
 
 def classify_headline(headline: dict) -> dict:
     sectors_list = ", ".join(sorted(VALID_SECTORS))
-    is_govt = headline.get("is_govt_source", False)
-    govt_note = (
+    is_govt      = headline.get("is_govt_source", False)
+    govt_note    = (
         "This is an OFFICIAL GOVERNMENT/REGULATORY source (PIB/RBI/SEBI). "
         "Give impact_score >= 7 unless clearly routine. "
     ) if is_govt else ""
@@ -237,7 +252,7 @@ Description: {headline["description"][:400]}""",
             response_format={"type": "json_object"},
         )
 
-        res = json.loads(response.choices[0].message.content)
+        res    = json.loads(response.choices[0].message.content)
         sector = res.get("sector", "Other")
         if sector not in VALID_SECTORS:
             sector = "Other"
@@ -376,14 +391,14 @@ def calculate_metrics(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
         macro_counts      = group.get("macro_sensitivity", pd.Series([])).value_counts()
         macro_sensitivity = macro_counts.index[0] if not macro_counts.empty else "medium"
 
-        conviction_map   = {"high": 1.0, "medium": 0.65, "low": 0.35}
-        avg_conviction   = float(group.get("conviction", pd.Series(["low"])).map(conviction_map).fillna(0.35).mean())
-        avg_catalyst_w   = float(group["catalyst_weight"].mean())
-        avg_decay        = float(group["signal_decay"].mean())
-        signal_strength  = round(avg_conviction * avg_catalyst_w * avg_decay * (avg_impact / 10) * 100, 1)
+        conviction_map  = {"high": 1.0, "medium": 0.65, "low": 0.35}
+        avg_conviction  = float(group.get("conviction", pd.Series(["low"])).map(conviction_map).fillna(0.35).mean())
+        avg_catalyst_w  = float(group["catalyst_weight"].mean())
+        avg_decay       = float(group["signal_decay"].mean())
+        signal_strength = round(avg_conviction * avg_catalyst_w * avg_decay * (avg_impact / 10) * 100, 1)
 
-        bullish_pct   = float((group.get("price_direction", pd.Series([])) == "bullish").mean())
-        bearish_pct   = float((group.get("price_direction", pd.Series([])) == "bearish").mean())
+        bullish_pct    = float((group.get("price_direction", pd.Series([])) == "bullish").mean())
+        bearish_pct    = float((group.get("price_direction", pd.Series([])) == "bearish").mean())
         momentum_score = round((bullish_pct - bearish_pct) * 100, 1)
 
         sector_rows.append({
@@ -435,36 +450,51 @@ def calculate_metrics(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     sector_df["sector_classification"] = sector_df.apply(bcg_classify, axis=1)
 
     def investment_signal(row: pd.Series) -> str:
-        csi = row["composite_sentiment_index"]
+        csi  = row["composite_sentiment_index"]
         risk = row["avg_weighted_risk"]
         mom  = row["momentum_score"]
-        if csi > 30 and risk < 25 and mom > 20:         return "BUY BIAS"
-        if csi < -20 or (risk > 50 and mom < -20):       return "AVOID"
-        if row["divergence_flag"] == "High Divergence":  return "CAUTION"
-        if mom > 10 and csi > 0:                         return "IMPROVING"
-        if row["contrarian_count"] > 2:                  return "CONTRARIAN WATCH"
+        if csi > 30 and risk < 25 and mom > 20:        return "BUY BIAS"
+        if csi < -20 or (risk > 50 and mom < -20):     return "AVOID"
+        if row["divergence_flag"] == "High Divergence": return "CAUTION"
+        if mom > 10 and csi > 0:                        return "IMPROVING"
+        if row["contrarian_count"] > 2:                 return "CONTRARIAN WATCH"
         return "NEUTRAL"
 
     sector_df["investment_signal"] = sector_df.apply(investment_signal, axis=1)
 
-    master_path = os.path.join(DATA_DIR, "master_sector_scores.csv")
-    if os.path.exists(master_path):
+    # Velocity — try Supabase first, then CSV
+    velocity_loaded = False
+    engine = get_db_engine()
+    if engine is not None:
         try:
-            history = pd.read_csv(master_path)
+            history = pd.read_sql_table("master_sector_scores", engine)
             if not history.empty and "composite_sentiment_index" in history.columns:
-                last_csi = (
-                    history.groupby("sector")["composite_sentiment_index"]
-                    .last().to_dict()
-                )
+                last_csi = history.groupby("sector")["composite_sentiment_index"].last().to_dict()
                 sector_df["sentiment_velocity"] = sector_df.apply(
                     lambda r: round(
                         r["composite_sentiment_index"]
-                        - last_csi.get(r["sector"], r["composite_sentiment_index"]),
-                        1,
-                    ), axis=1,
+                        - last_csi.get(r["sector"], r["composite_sentiment_index"]), 1
+                    ), axis=1
                 )
+                velocity_loaded = True
         except Exception as e:
-            print(f"  Velocity error: {e}")
+            print(f"  Supabase velocity lookup failed: {e}")
+
+    if not velocity_loaded:
+        master_path = os.path.join(DATA_DIR, "master_sector_scores.csv")
+        if os.path.exists(master_path):
+            try:
+                history = pd.read_csv(master_path)
+                if not history.empty and "composite_sentiment_index" in history.columns:
+                    last_csi = history.groupby("sector")["composite_sentiment_index"].last().to_dict()
+                    sector_df["sentiment_velocity"] = sector_df.apply(
+                        lambda r: round(
+                            r["composite_sentiment_index"]
+                            - last_csi.get(r["sector"], r["composite_sentiment_index"]), 1
+                        ), axis=1
+                    )
+            except Exception as e:
+                print(f"  CSV velocity error: {e}")
 
     if "sentiment_velocity" not in sector_df.columns:
         sector_df["sentiment_velocity"] = 0.0
@@ -480,8 +510,8 @@ def calculate_market_stress_index(
     if total == 0:
         return {"msi": 0, "level": "Low", "components": {}}
 
-    avg_risk       = float(sector_df["avg_weighted_risk"].mean()) if not sector_df.empty else 0
-    risk_component = min(avg_risk, 100)
+    avg_risk        = float(sector_df["avg_weighted_risk"].mean()) if not sector_df.empty else 0
+    risk_component  = min(avg_risk, 100)
 
     shock_pct       = headlines_df["shock_status"].isin(["Major Shock", "Shock"]).sum() / total * 100
     shock_component = min(shock_pct * 3, 100)
@@ -490,13 +520,13 @@ def calculate_market_stress_index(
     geo_component  = min(geo_pct * 2, 100)
 
     if not sector_df.empty:
-        div_count      = (sector_df["divergence_flag"] == "High Divergence").sum()
-        div_component  = min(div_count / len(sector_df) * 100 * 2, 100)
+        div_count     = (sector_df["divergence_flag"] == "High Divergence").sum()
+        div_component = min(div_count / len(sector_df) * 100 * 2, 100)
     else:
-        div_component  = 0
+        div_component = 0
 
-    neg_pct        = (headlines_df["sentiment"] == "negative").sum() / total * 100
-    neg_component  = min(neg_pct, 100)
+    neg_pct       = (headlines_df["sentiment"] == "negative").sum() / total * 100
+    neg_component = min(neg_pct, 100)
 
     msi = round(
         risk_component  * 0.30
@@ -529,8 +559,72 @@ def calculate_market_stress_index(
 
 def save_all(headlines_df: pd.DataFrame, sector_df: pd.DataFrame, msi: dict):
     import json as _json
+    run_date = datetime.now().strftime("%Y-%m-%d")
+
+    engine = get_db_engine()
+
+    if engine is not None:
+        try:
+            # Latest state — replace each run
+            headlines_df.to_sql("latest_headlines", engine, if_exists="replace", index=False)
+            sector_df.to_sql("latest_sectors",      engine, if_exists="replace", index=False)
+
+            # Pipeline status timestamp
+            pd.DataFrame([{"last_run": datetime.now().isoformat()}]).to_sql(
+                "pipeline_status", engine, if_exists="replace", index=False
+            )
+
+            # Shock headlines
+            shock_cols = [c for c in [
+                "title", "sector", "sentiment", "impact_score", "z_score",
+                "shock_status", "one_line_insight", "geopolitical_risk",
+                "url", "source", "hours_old", "catalyst_type", "signal_decay",
+            ] if c in headlines_df.columns]
+            headlines_df[
+                headlines_df["shock_status"].isin(["Major Shock", "Shock", "Watch"])
+            ][shock_cols].sort_values("z_score", ascending=False).to_sql(
+                "shock_headlines", engine, if_exists="replace", index=False
+            )
+
+            # Historical — append each run
+            headlines_df.assign(run_date=run_date).to_sql(
+                "master_headlines",     engine, if_exists="append", index=False
+            )
+            sector_df.assign(run_date=run_date).to_sql(
+                "master_sector_scores", engine, if_exists="append", index=False
+            )
+
+            # Trend analysis
+            try:
+                master = pd.read_sql_table("master_sector_scores", engine)
+                if "composite_sentiment_index" in master.columns and "run_date" in master.columns:
+                    trend = (
+                        master
+                        .groupby(["run_date", "sector"])["composite_sentiment_index"]
+                        .mean().reset_index()
+                    )
+                    trend["csi_3day_ma"] = (
+                        trend.groupby("sector")["composite_sentiment_index"]
+                        .transform(lambda x: x.rolling(3, min_periods=1).mean())
+                        .round(2)
+                    )
+                    trend.to_sql("sector_trend_analysis", engine, if_exists="replace", index=False)
+            except Exception as e:
+                print(f"  Trend error: {e}")
+
+            # MSI as JSON — also save locally as fallback for api.py
+            with open(os.path.join(DATA_DIR, "latest_msi.json"), "w") as f:
+                _json.dump(msi, f)
+
+            print("  Supabase upload complete — data is permanent.")
+            return
+
+        except Exception as e:
+            print(f"  Supabase save failed: {e} — falling back to CSV")
+
+    # CSV fallback (local dev or no DB configured)
+    print("  Saving to CSV (no DATABASE_URL found)")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-    run_date  = datetime.now().strftime("%Y-%m-%d")
 
     headlines_df.to_csv(os.path.join(DATA_DIR, "latest_headlines.csv"), index=False)
     sector_df.to_csv(os.path.join(DATA_DIR,    "latest_sectors.csv"),   index=False)
@@ -543,7 +637,6 @@ def save_all(headlines_df: pd.DataFrame, sector_df: pd.DataFrame, msi: dict):
         "shock_status", "one_line_insight", "geopolitical_risk",
         "url", "source", "hours_old", "catalyst_type", "signal_decay",
     ] if c in headlines_df.columns]
-
     headlines_df[
         headlines_df["shock_status"].isin(["Major Shock", "Shock", "Watch"])
     ][shock_cols].sort_values("z_score", ascending=False).to_csv(
@@ -555,12 +648,9 @@ def save_all(headlines_df: pd.DataFrame, sector_df: pd.DataFrame, msi: dict):
             "title", "sector", "sentiment", "impact_score",
             "catalyst_type", "one_line_insight", "url", "source", "hours_old",
         ] if c in headlines_df.columns]
-        headlines_df[
-            headlines_df["is_govt_source"].apply(bool)
-        ][govt_cols].to_csv(os.path.join(DATA_DIR, "govt_headlines.csv"), index=False)
-
-    headlines_df.to_csv(os.path.join(DATA_DIR, f"headlines_analyzed_{timestamp}.csv"), index=False)
-    sector_df.to_csv(os.path.join(DATA_DIR,    f"sector_benchmark_{timestamp}.csv"),   index=False)
+        headlines_df[headlines_df["is_govt_source"].apply(bool)][govt_cols].to_csv(
+            os.path.join(DATA_DIR, "govt_headlines.csv"), index=False
+        )
 
     for df_save, filename in [
         (headlines_df.assign(run_date=run_date), "master_headlines.csv"),
@@ -572,7 +662,7 @@ def save_all(headlines_df: pd.DataFrame, sector_df: pd.DataFrame, msi: dict):
                 combined = pd.concat([pd.read_csv(path), df_save], ignore_index=True)
                 combined.to_csv(path, index=False)
             except Exception as e:
-                print(f"  Master append error ({filename}): {e}")
+                print(f"  CSV append error ({filename}): {e}")
                 df_save.to_csv(path, index=False)
         else:
             df_save.to_csv(path, index=False)
@@ -628,16 +718,16 @@ def run_pipeline():
     print("  Calculating Market Stress Index...")
     msi = calculate_market_stress_index(headlines_df, sector_df)
 
-    print("  Saving files...")
+    print("  Saving data...")
     save_all(headlines_df, sector_df, msi)
 
-    elapsed    = (datetime.now() - start_time).seconds
-    major      = int((headlines_df["shock_status"] == "Major Shock").sum())
-    shocks     = int((headlines_df["shock_status"] == "Shock").sum())
-    geo        = int(headlines_df["geopolitical_risk"].apply(bool).sum())
-    govt       = int(headlines_df.get("is_govt_source", pd.Series([False])).apply(bool).sum())
-    avg_csi    = float(sector_df["composite_sentiment_index"].mean()) if not sector_df.empty else 0
-    avg_risk   = float(sector_df["avg_weighted_risk"].mean()) if not sector_df.empty else 0
+    elapsed  = (datetime.now() - start_time).seconds
+    major    = int((headlines_df["shock_status"] == "Major Shock").sum())
+    shocks   = int((headlines_df["shock_status"] == "Shock").sum())
+    geo      = int(headlines_df["geopolitical_risk"].apply(bool).sum())
+    govt     = int(headlines_df.get("is_govt_source", pd.Series([False])).apply(bool).sum())
+    avg_csi  = float(sector_df["composite_sentiment_index"].mean()) if not sector_df.empty else 0
+    avg_risk = float(sector_df["avg_weighted_risk"].mean()) if not sector_df.empty else 0
 
     if avg_csi > 20 and avg_risk < 20:    regime = "Risk On"
     elif avg_csi < -20 and avg_risk > 35: regime = "Panic"
@@ -663,7 +753,7 @@ def run_pipeline():
 
 
 if __name__ == "__main__":
-    lock_path = os.path.join(DATA_DIR, "pipeline.lock")
+    lock_path = "/tmp/pipeline.lock"
     with open(lock_path, "w") as f:
         f.write(datetime.now().isoformat())
     try:
