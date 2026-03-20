@@ -272,7 +272,7 @@ def pipeline_status():
             hl_count = len(pd.read_sql_table("latest_headlines", engine))
         except: pass
 
-    lock_path = os.path.join(DATA_DIR, "pipeline.lock")
+    lock_path = "/tmp/pipeline.lock"
     if os.path.exists(lock_path):
         age = datetime.now().timestamp() - os.path.getmtime(lock_path)
         is_running = age < 900 # Assume running if lock is < 15 mins old
@@ -286,4 +286,4 @@ def pipeline_status():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=False)
