@@ -137,6 +137,42 @@ def pipeline_status():
         "is_running": is_running,
         "data_available": hl_count > 0,
     }
+@app.get("/api/logs/marketpulse-secret-view")
+def view_live_logs():
+    """Secret endpoint to view live pipeline logs."""
+    if not os.path.exists(LOG_FILE):
+        return HTMLResponse("<body style='background:#000; color:#0f0; font-family:monospace; padding:20px;'>No logs yet. Run the pipeline!</body>")
+    
+    with open(LOG_FILE, "r") as f:
+        logs = f.read()
+        
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Live Pipeline Logs</title>
+        <style>
+            body {{ background-color: #0d1117; color: #58a6ff; font-family: 'Courier New', Courier, monospace; padding: 20px; font-size: 14px; line-height: 1.5; }}
+            pre {{ white-space: pre-wrap; word-wrap: break-word; }}
+            .header {{ color: #fff; border-bottom: 1px solid #30363d; padding-bottom: 10px; margin-bottom: 20px; }}
+        </style>
+        <script>
+            // Auto-refresh the page every 3 seconds to see live updates
+            setTimeout(() => location.reload(), 3000);
+            // Auto-scroll to the very bottom to see the newest logs
+            window.onload = () => window.scrollTo(0, document.body.scrollHeight);
+        </script>
+    </head>
+    <body>
+        <div class="header">
+            <h2>🟢 Live Pipeline Terminal</h2>
+            <p>Auto-refreshing every 3 seconds...</p>
+        </div>
+        <pre>{logs}</pre>
+    </body>
+    </html>
+    """
+    return HTMLResponse(html_content)
 
 class PipelineRequest(BaseModel):
     secret: str
