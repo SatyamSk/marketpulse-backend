@@ -52,44 +52,111 @@ def load_data():
     except Exception as e:
         raise HTTPException(status_code=404, detail=f"GitHub Data not found. Error: {e}")
 
+def classify_regime(avg_nss: float, avg_risk: float) -> dict:
+    if avg_nss > 20 and avg_risk < 20:
+        return {
+            "regime":            "Risk On",
+            "description":       "Broad bullish sentiment, low systemic risk. Momentum trades favored.",
+            "nifty_implication": "Gap-up open likely. Momentum trades have higher probability.",
+            "watch":             "High-momentum sectors showing positive velocity.",
+            "avoid":             "Defensive over-positioning not needed in Risk On conditions.",
+        }
+    elif avg_nss < -20 and avg_risk > 35:
+        return {
+            "regime":            "Panic",
+            "description":       "Widespread negative sentiment with high systemic risk. Defensive only.",
+            "nifty_implication": "Heavy selling pressure expected. Watch key support levels.",
+            "watch":             "Defensive sectors — Banking if NSS is stable.",
+            "avoid":             "All high-beta positions. Reduce exposure immediately.",
+        }
+    elif avg_nss > 0 and avg_risk > 25:
+        return {
+            "regime":            "Complacent",
+            "description":       "Positive headlines masking elevated underlying risk. Watch for reversal.",
+            "nifty_implication": "Deceptively calm open possible. Reversal risk elevated.",
+            "watch":             "Divergence signals — sectors where NSS and impact-weighted disagree.",
+            "avoid":             "Overleveraged positions. Risk is higher than headlines suggest.",
+        }
+    else:
+        return {
+            "regime":            "Risk Off",
+            "description":       "Cautious market conditions. Capital preservation favored.",
+            "nifty_implication": "Flat to gap-down open likely. Avoid chasing early moves.",
+            "watch":             "Sectors with positive velocity — early recovery signs.",
+            "avoid":             "High-leverage positions and sectors with negative velocity.",
+        }
+
+
 @app.get("/api/dashboard")
 def get_dashboard():
     headlines, benchmark = load_data()
-    if "geopolitical_risk" in headlines.columns:
-        headlines["geopolitical_risk"] = headlines["geopolitical_risk"].apply(lambda x: str(x).lower() in ["true", "1", "yes"])
 
+    if "geopolitical_risk" in headlines.columns:
+        headlines["geopolitical_risk"] = headlines["geopolitical_risk"].apply(
+            lambda x: str(x).lower() in ["true", "1", "yes"]
+        )
+
+    geo_hl   = headlines[headlines["geopolitical_risk"] == True] if "geopolitical_risk" in headlines.columns else pd.DataFrame()
     avg_nss  = float(benchmark["composite_sentiment_index"].mean()) if not benchmark.empty else 0.0
     avg_risk = float(benchmark["avg_weighted_risk"].mean()) if not benchmark.empty else 0.0
-    regime = {"regime": "Risk On", "description": "Broad bullish sentiment.", "nifty_implication": "Gap-up"} if avg_nss > 20 and avg_risk < 20 else {"regime": "Panic", "description": "High risk.", "nifty_implication": "Selling pressure"}
+    regime   = classify_regime(avg_nss, avg_risk)
 
-    pareto_df = benchmark.sort_values("avg_weighted_risk", ascending=False).copy()
+    pareto_df  = benchmark.sort_values("avg_weighted_risk", ascending=False).copy()
     total_risk = max(pareto_df["avg_weighted_risk"].sum(), 1)
-    pareto_df["cumulative_pct"] = (pareto_df["avg_weighted_risk"].cumsum() / total_risk * 100).round(1)
+    pareto_df["cumulative_pct"] = (
+        pareto_df["avg_weighted_risk"].cumsum() / total_risk * 100
+    ).round(1)
+
+    # Build contagion_flows from geo-flagged headlines
+    contagion = []
+    if not geo_hl.empty and "sector" in geo_hl.columns and "impact_score" in geo_hl.columns:
+        contagion = [
+            {
+                "source": "Geopolitical Event",
+                "target": r["sector"],
+                "value":  round(float(r["impact_score"]), 1),
+            }
+            for _, r in geo_hl.groupby("sector")["impact_score"].mean().reset_index().iterrows()
+        ]
 
     shock_headlines, msi = [], {}
     try:
         shock_df = pd.read_csv(f"{RAW_BASE_URL}shock_headlines.csv")
         shock_headlines = to_records(shock_df)
-    except: pass
+    except Exception:
+        pass
     try:
         msi_req = requests.get(f"{RAW_BASE_URL}latest_msi.json")
-        if msi_req.status_code == 200: msi = msi_req.json()
-    except: pass
+        if msi_req.status_code == 200:
+            msi = msi_req.json()
+    except Exception:
+        pass
 
-    shock_counts = {"major": len([h for h in shock_headlines if h.get("shock_status") == "Major Shock"]), "shock": len([h for h in shock_headlines if h.get("shock_status") == "Shock"]), "watch": len([h for h in shock_headlines if h.get("shock_status") == "Watch"])}
+    shock_counts = {
+        "major": len([h for h in shock_headlines if h.get("shock_status") == "Major Shock"]),
+        "shock": len([h for h in shock_headlines if h.get("shock_status") == "Shock"]),
+        "watch": len([h for h in shock_headlines if h.get("shock_status") == "Watch"]),
+    }
 
     return {
-        "last_updated": datetime.now().isoformat(),
-        "market_regime": regime,
-        "benchmark": to_records(benchmark),
-        "headlines": to_records(headlines.sort_values("impact_score", ascending=False) if "impact_score" in headlines.columns else headlines),
-        "pareto": to_records(pareto_df[["sector", "avg_weighted_risk", "cumulative_pct"]]),
-        "velocity_trend": [], 
-        "shock_headlines": shock_headlines,
-        "shock_counts": shock_counts,
+        "last_updated":        datetime.now().isoformat(),
+        "market_regime":       regime,
+        "benchmark":           to_records(benchmark),
+        "headlines":           to_records(
+            headlines.sort_values("impact_score", ascending=False)
+            if "impact_score" in headlines.columns else headlines
+        ),
+        "pareto":              to_records(pareto_df[["sector", "avg_weighted_risk", "cumulative_pct"]]),
+        "contagion_flows":     contagion,
+        "velocity_trend":      [],
+        "shock_headlines":     shock_headlines,
+        "shock_counts":        shock_counts,
         "market_stress_index": msi,
         "summary_stats": {
-            "total_headlines": len(headlines), "avg_nss": round(avg_nss, 1), "avg_risk": round(avg_risk, 1),
+            "total_headlines":    len(headlines),
+            "geopolitical_flags": len(geo_hl),
+            "avg_nss":            round(avg_nss, 1),
+            "avg_risk":           round(avg_risk, 1),
         },
     }
 
