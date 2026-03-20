@@ -2,11 +2,11 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
-from sqlalchemy import create_engine
 import pandas as pd
 import numpy as np
 import os
 import json
+import requests
 import subprocess
 import sys
 import threading
@@ -23,11 +23,8 @@ LOG_FILE         = os.path.join(DATA_DIR, "pipeline_live.log")
 client           = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 PIPELINE_SECRET  = os.getenv("PIPELINE_SECRET", "marketpulse2024")
 
-# SUPABASE DATABASE CONNECTION
-DB_URL = os.getenv("DATABASE_URL")
-if DB_URL and DB_URL.startswith("postgres://"):
-    DB_URL = DB_URL.replace("postgres://", "postgresql://", 1)
-engine = create_engine(DB_URL) if DB_URL else None
+# GITHUB RAW DATA URLs
+RAW_BASE_URL = "https://raw.githubusercontent.com/SatyamSk/MarketPulseAIData/main/"
 
 app = FastAPI(title="MarketPulse AI API")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -44,10 +41,10 @@ def to_records(df: pd.DataFrame) -> list[dict]:
     return [{k: safe(v) for k, v in row.items()} for row in df.to_dict(orient="records")]
 
 def load_data():
-    if not engine: raise HTTPException(status_code=500, detail="DATABASE_URL not configured.")
     try:
-        headlines = pd.read_sql_table("latest_headlines", engine)
-        sectors = pd.read_sql_table("latest_sectors", engine)
+        # Read directly from GitHub's raw CDN
+        headlines = pd.read_csv(f"{RAW_BASE_URL}latest_headlines.csv")
+        sectors = pd.read_csv(f"{RAW_BASE_URL}latest_sectors.csv")
         
         for col in ["impact_score", "sentiment_confidence", "valence", "arousal"]:
             if col in headlines.columns: headlines[col] = pd.to_numeric(headlines[col], errors="coerce")
@@ -56,7 +53,7 @@ def load_data():
             
         return headlines, sectors
     except Exception as e:
-        raise HTTPException(status_code=404, detail=f"Database error: {e}")
+        raise HTTPException(status_code=404, detail=f"GitHub Data not found. Run the pipeline first. Error: {e}")
 
 @app.get("/api/dashboard")
 def get_dashboard():
@@ -73,20 +70,18 @@ def get_dashboard():
     total_risk = max(pareto_df["avg_weighted_risk"].sum(), 1)
     pareto_df["cumulative_pct"] = (pareto_df["avg_weighted_risk"].cumsum() / total_risk * 100).round(1)
 
-    velocity_trend, shock_headlines, msi = [], [], {}
-    if engine:
-        try:
-            trend = pd.read_sql_table("sector_trend_analysis", engine)
-            pivot = trend.pivot_table(index="run_date", columns="sector", values="csi_3day_ma").fillna(0).reset_index().rename(columns={"run_date": "date"})
-            pivot["run"] = range(1, len(pivot) + 1)
-            velocity_trend = to_records(pivot)
-        except: pass
-        try: shock_headlines = to_records(pd.read_sql_table("shock_headlines", engine))
-        except: pass
-        try:
-            msi_df = pd.read_sql_table("latest_msi", engine)
-            if not msi_df.empty: msi = json.loads(msi_df.iloc[0]["msi_data"])
-        except: pass
+    shock_headlines, msi = [], {}
+    
+    try:
+        shock_df = pd.read_csv(f"{RAW_BASE_URL}shock_headlines.csv")
+        shock_headlines = to_records(shock_df)
+    except: pass
+    
+    try:
+        msi_req = requests.get(f"{RAW_BASE_URL}latest_msi.json")
+        if msi_req.status_code == 200:
+            msi = msi_req.json()
+    except: pass
 
     shock_counts = {"major": len([h for h in shock_headlines if h.get("shock_status") == "Major Shock"]), "shock": len([h for h in shock_headlines if h.get("shock_status") == "Shock"]), "watch": len([h for h in shock_headlines if h.get("shock_status") == "Watch"])}
 
@@ -96,7 +91,7 @@ def get_dashboard():
         "benchmark": to_records(benchmark),
         "headlines": to_records(headlines.sort_values("impact_score", ascending=False) if "impact_score" in headlines.columns else headlines),
         "pareto": to_records(pareto_df[["sector", "avg_weighted_risk", "cumulative_pct"]]),
-        "velocity_trend": velocity_trend,
+        "velocity_trend": [], # Disabled for raw github approach unless you append locally
         "shock_headlines": shock_headlines,
         "shock_counts": shock_counts,
         "market_stress_index": msi,
@@ -110,12 +105,16 @@ def get_dashboard():
 @app.get("/api/pipeline/status")
 def pipeline_status():
     hl_time, hl_count = None, 0
-    if engine:
-        try:
-            status_df = pd.read_sql_table("pipeline_status", engine)
-            if not status_df.empty: hl_time = status_df.iloc[0]["last_run"]
-            hl_count = len(pd.read_sql_table("latest_headlines", engine))
-        except: pass
+    
+    try:
+        # Check GitHub for last run time
+        status_req = requests.get(f"{RAW_BASE_URL}pipeline_status.json")
+        if status_req.status_code == 200:
+            hl_time = status_req.json().get("last_run")
+            
+        hl_df = pd.read_csv(f"{RAW_BASE_URL}latest_headlines.csv", usecols=[0])
+        hl_count = len(hl_df)
+    except: pass
 
     lock_path = "/tmp/pipeline.lock"
     is_running = False
@@ -131,85 +130,33 @@ def pipeline_status():
 
 
 # ==========================================
-# 🚀 1. THE BYPASS: DIRECT FORCE-RUN URL
+# 🚀 OVERRIDE START & LIVE LOGS
 # ==========================================
 @app.get("/api/pipeline/force-run")
 def force_run_pipeline():
-    """Bypass Vercel entirely and force the pipeline to start."""
     max_per_feed = 12
-    
     def run():
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
-        
         with open(LOG_FILE, "w") as log_f:
-            log_f.write(f"🚀 PIPELINE FORCED START AT {datetime.now().strftime('%H:%M:%S')}\n")
-            log_f.write(f"Bypassing Vercel. Fetching up to {max_per_feed} per feed.\n{'='*50}\n")
+            log_f.write(f"🚀 OVERRIDING GITHUB REPOSITORY AT {datetime.now().strftime('%H:%M:%S')}\n{'='*50}\n")
             log_f.flush()
-            
             try:
-                # Execute using direct 'python' engine instead of sys.executable
-                process = subprocess.Popen(
-                    ["python", os.path.join(DATA_DIR, "pipeline.py"), f"--max-per-feed={max_per_feed}"],
-                    cwd=DATA_DIR,
-                    stdout=log_f,
-                    stderr=subprocess.STDOUT,
-                    env=env,
-                    text=True
-                )
+                process = subprocess.Popen(["python", os.path.join(DATA_DIR, "pipeline.py"), f"--max-per-feed={max_per_feed}"], cwd=DATA_DIR, stdout=log_f, stderr=subprocess.STDOUT, env=env, text=True)
                 process.wait()
-                
                 with open(LOG_FILE, "a") as append_f:
-                    append_f.write(f"\n{'='*50}\n✅ SCRIPT FINISHED WITH EXIT CODE {process.returncode}\n")
-                    
+                    append_f.write(f"\n{'='*50}\n✅ UPLOAD COMPLETE.\n")
             except Exception as e:
-                with open(LOG_FILE, "a") as append_f:
-                    append_f.write(f"\n🔥 FATAL LAUNCH ERROR: {e}\n")
-                    append_f.write(traceback.format_exc())
+                with open(LOG_FILE, "a") as append_f: append_f.write(f"\n🔥 FATAL ERROR: {e}\n{traceback.format_exc()}")
 
     threading.Thread(target=run, daemon=True).start()
-    
-    # Send user directly to the log viewer!
-    return HTMLResponse("""
-        <h1 style='font-family: sans-serif; text-align: center; margin-top: 50px;'>🚀 Pipeline Triggered!</h1>
-        <p style='text-align: center; font-family: sans-serif;'><a href='/api/logs/marketpulse-secret-view' style='font-size: 20px; color: blue;'>Click here to watch the live logs</a></p>
-    """)
+    return HTMLResponse("<h1 style='text-align: center; margin-top: 50px;'>🚀 Writing to GitHub!</h1><p style='text-align: center;'><a href='/api/logs/marketpulse-secret-view'>Watch Live Logs</a></p>")
 
-
-# ==========================================
-# 🟢 2. THE SECRET LOG VIEWER
-# ==========================================
 @app.get("/api/logs/marketpulse-secret-view")
 def view_live_logs():
-    if not os.path.exists(LOG_FILE):
-        return HTMLResponse("<body style='background:#000; color:#0f0; font-family:monospace; padding:20px;'>No logs yet. Run the pipeline!</body>")
-    
-    with open(LOG_FILE, "r") as f:
-        logs = f.read()
-        
-    html_content = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Live Pipeline Logs</title>
-        <style>
-            body {{ background-color: #0d1117; color: #58a6ff; font-family: 'Courier New', Courier, monospace; padding: 20px; font-size: 14px; line-height: 1.5; }}
-            pre {{ white-space: pre-wrap; word-wrap: break-word; }}
-            .header {{ color: #fff; border-bottom: 1px solid #30363d; padding-bottom: 10px; margin-bottom: 20px; }}
-        </style>
-        <script>
-            setTimeout(() => location.reload(), 3000);
-            window.onload = () => window.scrollTo(0, document.body.scrollHeight);
-        </script>
-    </head>
-    <body>
-        <div class="header"><h2>🟢 Live Pipeline Terminal</h2></div>
-        <pre>{logs}</pre>
-    </body>
-    </html>
-    """
-    return HTMLResponse(html_content)
-
+    if not os.path.exists(LOG_FILE): return HTMLResponse("<body style='background:#000; color:#0f0; padding:20px;'>No logs yet.</body>")
+    with open(LOG_FILE, "r") as f: logs = f.read()
+    return HTMLResponse(f"<html><head><style>body {{ background:#0d1117; color:#58a6ff; font-family:monospace; padding:20px; }} pre {{ white-space: pre-wrap; }}</style><script>setTimeout(() => location.reload(), 3000); window.onload = () => window.scrollTo(0, document.body.scrollHeight);</script></head><body><h2>🟢 Live GitHub Sync Logs</h2><pre>{logs}</pre></body></html>")
 
 class PipelineRequest(BaseModel):
     secret: str
