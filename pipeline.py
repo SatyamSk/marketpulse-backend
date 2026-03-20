@@ -91,9 +91,9 @@ def fetch_news() -> list[dict]:
                 publish_dt_ist = publish_dt.astimezone(IST)
                 
                 # 2. STRICT TIME HORIZON FILTER (Today or Yesterday ONLY)
-                days_old = (now_ist.date() - publish_dt_ist.date()).days
-                if days_old > 1:
-                    continue # Brutally drop old news
+                hours_old_check = (now_ist - publish_dt_ist).total_seconds() / 3600
+                if hours_old_check > 48:
+                    continue  # Drop anything older than 48 hours
                     
                 seen.update([title, content_hash])
                 hours_old = max(0, (now_ist - publish_dt_ist).total_seconds() / 3600)
