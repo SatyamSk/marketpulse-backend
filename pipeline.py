@@ -83,7 +83,7 @@ def get_max_per_feed() -> int:
         if arg.startswith("--max-per-feed="):
             try: return max(3, min(50, int(arg.split("=")[1])))
             except: pass
-    return 12
+    return 2
 
 def parse_publish_time(entry: dict) -> datetime:
     for field in ["published", "updated", "created"]:
