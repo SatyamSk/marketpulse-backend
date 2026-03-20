@@ -5,6 +5,5 @@ pandas
 numpy
 feedparser
 python-dotenv
-schedule
 SQLAlchemy
 psycopg2-binary
