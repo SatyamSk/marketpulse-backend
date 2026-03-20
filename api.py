@@ -12,7 +12,6 @@ import sys
 import threading
 import traceback
 from datetime import datetime
-from collections import defaultdict
 from openai import OpenAI
 from dotenv import load_dotenv
 
@@ -23,7 +22,6 @@ LOG_FILE         = os.path.join(DATA_DIR, "pipeline_live.log")
 client           = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 PIPELINE_SECRET  = os.getenv("PIPELINE_SECRET", "marketpulse2024")
 
-# GITHUB RAW DATA URLs
 RAW_BASE_URL = "https://raw.githubusercontent.com/SatyamSk/MarketPulseAIData/main/"
 
 app = FastAPI(title="MarketPulse AI API")
@@ -42,7 +40,6 @@ def to_records(df: pd.DataFrame) -> list[dict]:
 
 def load_data():
     try:
-        # Read directly from GitHub's raw CDN
         headlines = pd.read_csv(f"{RAW_BASE_URL}latest_headlines.csv")
         sectors = pd.read_csv(f"{RAW_BASE_URL}latest_sectors.csv")
         
@@ -53,12 +50,11 @@ def load_data():
             
         return headlines, sectors
     except Exception as e:
-        raise HTTPException(status_code=404, detail=f"GitHub Data not found. Run the pipeline first. Error: {e}")
+        raise HTTPException(status_code=404, detail=f"GitHub Data not found. Error: {e}")
 
 @app.get("/api/dashboard")
 def get_dashboard():
     headlines, benchmark = load_data()
-
     if "geopolitical_risk" in headlines.columns:
         headlines["geopolitical_risk"] = headlines["geopolitical_risk"].apply(lambda x: str(x).lower() in ["true", "1", "yes"])
 
@@ -71,16 +67,13 @@ def get_dashboard():
     pareto_df["cumulative_pct"] = (pareto_df["avg_weighted_risk"].cumsum() / total_risk * 100).round(1)
 
     shock_headlines, msi = [], {}
-    
     try:
         shock_df = pd.read_csv(f"{RAW_BASE_URL}shock_headlines.csv")
         shock_headlines = to_records(shock_df)
     except: pass
-    
     try:
         msi_req = requests.get(f"{RAW_BASE_URL}latest_msi.json")
-        if msi_req.status_code == 200:
-            msi = msi_req.json()
+        if msi_req.status_code == 200: msi = msi_req.json()
     except: pass
 
     shock_counts = {"major": len([h for h in shock_headlines if h.get("shock_status") == "Major Shock"]), "shock": len([h for h in shock_headlines if h.get("shock_status") == "Shock"]), "watch": len([h for h in shock_headlines if h.get("shock_status") == "Watch"])}
@@ -91,46 +84,54 @@ def get_dashboard():
         "benchmark": to_records(benchmark),
         "headlines": to_records(headlines.sort_values("impact_score", ascending=False) if "impact_score" in headlines.columns else headlines),
         "pareto": to_records(pareto_df[["sector", "avg_weighted_risk", "cumulative_pct"]]),
-        "velocity_trend": [], # Disabled for raw github approach unless you append locally
+        "velocity_trend": [], 
         "shock_headlines": shock_headlines,
         "shock_counts": shock_counts,
         "market_stress_index": msi,
         "summary_stats": {
-            "total_headlines": len(headlines),
-            "avg_nss": round(avg_nss, 1),
-            "avg_risk": round(avg_risk, 1),
+            "total_headlines": len(headlines), "avg_nss": round(avg_nss, 1), "avg_risk": round(avg_risk, 1),
         },
     }
 
-@app.get("/api/pipeline/status")
-def pipeline_status():
-    hl_time, hl_count = None, 0
-    
-    try:
-        # Check GitHub for last run time
-        status_req = requests.get(f"{RAW_BASE_URL}pipeline_status.json")
-        if status_req.status_code == 200:
-            hl_time = status_req.json().get("last_run")
-            
-        hl_df = pd.read_csv(f"{RAW_BASE_URL}latest_headlines.csv", usecols=[0])
-        hl_count = len(hl_df)
-    except: pass
+# ==========================================
+# 🤖 THE COPILOT CHAT ENDPOINT
+# ==========================================
+class ChatRequest(BaseModel):
+    message: str
+    history: list
+    context_headlines: list
+    context_sectors: list
 
-    lock_path = "/tmp/pipeline.lock"
-    is_running = False
-    if os.path.exists(lock_path):
-        is_running = (datetime.now().timestamp() - os.path.getmtime(lock_path)) < 600
+@app.post("/api/chat")
+def chat_endpoint(req: ChatRequest):
+    sector_ctx = "\n".join([f"• {s.get('sector','')} | Risk {s.get('avg_weighted_risk',0)} ({s.get('risk_level','')}) | CSI {s.get('composite_sentiment_index',0)}" for s in req.context_sectors])
+    hl_ctx = "\n".join([f"• [{h.get('sector','')}] {h.get('title','')} | Impact: {h.get('impact_score','')}/10 | {h.get('one_line_insight','')}" for h in req.context_headlines[:15]])
 
-    return {
-        "last_headlines_update": hl_time,
-        "headlines_count": hl_count,
-        "is_running": is_running,
-        "data_available": hl_count > 0,
-    }
+    system_prompt = f"""You are the MarketPulse AI Copilot for Indian intraday traders.
+You answer questions based ONLY on the data below. Be punchy, actionable, and analytical.
+If asked about a stock not in the context, say "I don't see current data on that today."
+Date Context: {datetime.now().strftime('%d %B %Y')} (Data is strictly from the last 24-48 hours).
 
+SECTOR DATA:
+{sector_ctx}
+
+TOP HEADLINES:
+{hl_ctx}"""
+
+    messages = [{"role": "system", "content": system_prompt}]
+    messages += [{"role": m["role"], "content": m["content"]} for m in req.history[-4:]]
+    messages.append({"role": "user", "content": req.message})
+
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=messages,
+        temperature=0.2,
+        max_tokens=400,
+    )
+    return {"answer": response.choices[0].message.content}
 
 # ==========================================
-# 🚀 OVERRIDE START & LIVE LOGS
+# 🚀 DIAGNOSTICS & TRIGGER
 # ==========================================
 @app.get("/api/pipeline/force-run")
 def force_run_pipeline():
@@ -144,11 +145,9 @@ def force_run_pipeline():
             try:
                 process = subprocess.Popen(["python", os.path.join(DATA_DIR, "pipeline.py"), f"--max-per-feed={max_per_feed}"], cwd=DATA_DIR, stdout=log_f, stderr=subprocess.STDOUT, env=env, text=True)
                 process.wait()
-                with open(LOG_FILE, "a") as append_f:
-                    append_f.write(f"\n{'='*50}\n✅ UPLOAD COMPLETE.\n")
+                with open(LOG_FILE, "a") as append_f: append_f.write(f"\n{'='*50}\n✅ UPLOAD COMPLETE.\n")
             except Exception as e:
                 with open(LOG_FILE, "a") as append_f: append_f.write(f"\n🔥 FATAL ERROR: {e}\n{traceback.format_exc()}")
-
     threading.Thread(target=run, daemon=True).start()
     return HTMLResponse("<h1 style='text-align: center; margin-top: 50px;'>🚀 Writing to GitHub!</h1><p style='text-align: center;'><a href='/api/logs/marketpulse-secret-view'>Watch Live Logs</a></p>")
 
@@ -157,15 +156,6 @@ def view_live_logs():
     if not os.path.exists(LOG_FILE): return HTMLResponse("<body style='background:#000; color:#0f0; padding:20px;'>No logs yet.</body>")
     with open(LOG_FILE, "r") as f: logs = f.read()
     return HTMLResponse(f"<html><head><style>body {{ background:#0d1117; color:#58a6ff; font-family:monospace; padding:20px; }} pre {{ white-space: pre-wrap; }}</style><script>setTimeout(() => location.reload(), 3000); window.onload = () => window.scrollTo(0, document.body.scrollHeight);</script></head><body><h2>🟢 Live GitHub Sync Logs</h2><pre>{logs}</pre></body></html>")
-
-class PipelineRequest(BaseModel):
-    secret: str
-    max_per_feed: int = 12
-
-@app.post("/api/pipeline/run")
-def trigger_pipeline(req: PipelineRequest):
-    if req.secret != PIPELINE_SECRET: raise HTTPException(status_code=401, detail="Invalid secret key.")
-    return {"status": "Use the /api/pipeline/force-run link directly in your browser."}
 
 if __name__ == "__main__":
     import uvicorn
