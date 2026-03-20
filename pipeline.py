@@ -7,7 +7,7 @@ import sys
 import hashlib
 import concurrent.futures
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from openai import OpenAI
 from dotenv import load_dotenv
 from dateutil import parser as dateparser
@@ -18,21 +18,30 @@ load_dotenv()
 DATA_DIR = os.path.dirname(os.path.abspath(__file__))
 client   = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# Your new Data Repository
+# GITHUB CONFIG
 GITHUB_REPO = "SatyamSk/MarketPulseAIData"
+
+# STRICT IST TIMEZONE DEFINITION
+IST = timezone(timedelta(hours=5, minutes=30))
 
 RSS_FEEDS = [
     ("https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms",      "ET Markets"),
     ("https://economictimes.indiatimes.com/economy/rssfeeds/1373380680.cms",      "ET Economy"),
     ("https://economictimes.indiatimes.com/tech/rssfeeds/13357263.cms",           "ET Tech"),
+    ("https://economictimes.indiatimes.com/small-biz/startups/rssfeeds/13357270.cms","ET Startups"),
+    ("https://economictimes.indiatimes.com/industry/rssfeeds/13352306.cms",       "ET Industry"),
     ("https://www.livemint.com/rss/markets",   "Livemint Markets"),
+    ("https://www.livemint.com/rss/companies", "Livemint Companies"),
+    ("https://www.livemint.com/rss/economy",   "Livemint Economy"),
     ("https://www.business-standard.com/rss/markets-106.rss",        "BS Markets"),
+    ("https://www.business-standard.com/rss/economy-policy-101.rss", "BS Economy"),
     ("https://www.moneycontrol.com/rss/latestnews.xml",    "MC Latest News"),
+    ("https://www.financialexpress.com/market/feed/",  "Financial Express Markets"),
     ("https://pib.gov.in/RssMain.aspx?ModId=6&Lang=1&Regid=3",   "PIB Economy"),
     ("https://www.rbi.org.in/scripts/rss.aspx",                   "RBI"),
     ("https://www.sebi.gov.in/sebi_data/rss/sebi_news.xml",       "SEBI"),
     ("https://feeds.reuters.com/reuters/INbusinessNews", "Reuters India"),
-] # Truncated for brevity, keep your full list of 37 here!
+] 
 
 SECTOR_WEIGHTS = {"Banking": 1.5, "Energy": 1.4, "IT": 1.2, "Fintech": 1.2, "Manufacturing": 1.1, "Healthcare": 1.1, "FMCG": 1.0, "Startup": 0.9, "Retail": 0.8, "Other": 0.7}
 CATALYST_WEIGHTS = {"government_contract": 1.7, "policy_change": 1.6, "pib_announcement": 1.6, "rbi_action": 1.5, "sebi_action": 1.5, "fii_flow": 1.4, "capex_announcement": 1.4, "earnings": 1.3, "sector_tailwind": 1.2, "regulatory": 1.1, "management_change": 1.0, "global_event": 0.9, "other": 0.7}
@@ -60,7 +69,8 @@ def parse_publish_time(entry: dict) -> datetime:
 
 def fetch_news() -> list[dict]:
     max_per_feed = get_max_per_feed()
-    print(f"  Fetching — {max_per_feed} per feed...")
+    now_ist = datetime.now(IST)
+    print(f"  Fetching — {max_per_feed} per feed. Strict IST Horizon applied...")
     headlines, seen = [], set()
 
     for feed_url, feed_label in RSS_FEEDS:
@@ -75,14 +85,22 @@ def fetch_news() -> list[dict]:
                 
                 content_hash = hashlib.md5(title[:60].lower().encode()).hexdigest()[:8]
                 if content_hash in seen: continue
-                seen.update([title, content_hash])
-
+                
+                # 1. PARSE TIME AND CONVERT TO IST
                 publish_dt = parse_publish_time(entry)
-                hours_old  = max(0, (datetime.now(timezone.utc) - publish_dt).total_seconds() / 3600)
+                publish_dt_ist = publish_dt.astimezone(IST)
+                
+                # 2. STRICT TIME HORIZON FILTER (Today or Yesterday ONLY)
+                days_old = (now_ist.date() - publish_dt_ist.date()).days
+                if days_old > 1:
+                    continue # Brutally drop old news
+                    
+                seen.update([title, content_hash])
+                hours_old = max(0, (now_ist - publish_dt_ist).total_seconds() / 3600)
 
                 headlines.append({
                     "title": title, "description": desc[:800], "source": feed_label,
-                    "source_url": feed_url, "published": publish_dt.isoformat(),
+                    "source_url": feed_url, "published": publish_dt_ist.strftime("%Y-%m-%d %H:%M:%S IST"),
                     "hours_old": round(hours_old, 1), "url": entry.get("link", entry.get("url", "")).strip(),
                     "is_govt_source": any(x in feed_label for x in ["PIB", "RBI", "SEBI"]),
                 })
@@ -128,7 +146,7 @@ def classify_headline(headline: dict) -> dict:
         return {"sector": "Other", "sentiment": "neutral", "sentiment_confidence": 0.5, "impact_score": 5, "valence": 0.5, "arousal": 0.5, "geopolitical_risk": False, "affected_companies": [], "second_order_beneficiaries": [], "catalyst_type": "other", "price_direction": "neutral", "time_horizon": "intraday", "conviction": "low", "macro_sensitivity": "medium", "one_line_insight": "AI error.", "signal_reason": "", "contrarian_flag": False, "contrarian_reason": ""}
 
 def process_all_headlines(headlines: list) -> list:
-    print(f"  Classifying {len(headlines)} headlines using High-Speed Threading...")
+    print(f"  Classifying {len(headlines)} fresh IST headlines using Threading...")
     analyzed = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         future_to_h = {executor.submit(classify_headline, h): h for h in headlines}
@@ -136,9 +154,7 @@ def process_all_headlines(headlines: list) -> list:
             h = future_to_h[future]
             try:
                 analyzed.append({**h, **future.result()})
-                print(f"    ✓ Analyzed: {h['title'][:50]}...")
-            except Exception as e: 
-                pass
+            except Exception: pass
     return analyzed
 
 def calculate_metrics(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -184,10 +200,6 @@ def calculate_market_stress_index(headlines_df: pd.DataFrame, sector_df: pd.Data
     msi = round(risk_comp * 0.60 + shock_comp * 0.40, 1)
     return {"msi": msi, "level": "Critical" if msi >= 75 else "High" if msi >= 50 else "Elevated" if msi >= 30 else "Low"}
 
-
-# ==========================================
-# GITHUB OVERRIDE SYSTEM
-# ==========================================
 def push_to_github(repo, file_path, content_str, commit_message):
     try:
         contents = repo.get_contents(file_path, ref="main")
@@ -198,44 +210,37 @@ def push_to_github(repo, file_path, content_str, commit_message):
 def save_all(headlines_df: pd.DataFrame, sector_df: pd.DataFrame, msi: dict):
     token = os.getenv("GITHUB_TOKEN")
     if not token:
-        print("  [!] ERROR: GITHUB_TOKEN is missing. Cannot upload to GitHub.")
+        print("  [!] ERROR: GITHUB_TOKEN is missing.")
         return
-        
     try:
         print(f"  Uploading directly to GitHub Repository ({GITHUB_REPO})...")
         g = Github(token)
         repo = g.get_repo(GITHUB_REPO)
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S IST")
 
-        # 1. Overwrite Main Files
         push_to_github(repo, "latest_headlines.csv", headlines_df.to_csv(index=False), f"Update headlines {timestamp}")
         push_to_github(repo, "latest_sectors.csv", sector_df.to_csv(index=False), f"Update sectors {timestamp}")
         push_to_github(repo, "latest_msi.json", json.dumps(msi, indent=2), f"Update MSI {timestamp}")
-        push_to_github(repo, "pipeline_status.json", json.dumps({"last_run": datetime.now().isoformat()}), f"Update Status {timestamp}")
+        push_to_github(repo, "pipeline_status.json", json.dumps({"last_run": timestamp}), f"Update Status {timestamp}")
 
-        # 2. Extract Shocks and Overwrite
         shock_cols = [c for c in ["title", "sector", "sentiment", "impact_score", "z_score", "shock_status", "one_line_insight", "geopolitical_risk", "url"] if c in headlines_df.columns]
         shock_df = headlines_df[headlines_df["shock_status"].isin(["Major Shock", "Shock", "Watch"])]
         if not shock_df.empty:
             push_to_github(repo, "shock_headlines.csv", shock_df[shock_cols].to_csv(index=False), f"Update shocks {timestamp}")
 
-        print("  ✓ GitHub Data Override Complete! The API can now read the fresh files.")
+        print("  ✓ GitHub Data Override Complete!")
     except Exception as e:
         print(f"  [!] CRITICAL GITHUB UPLOAD ERROR: {e}")
         traceback.print_exc()
 
 def run_pipeline():
-    start_time = datetime.now()
-    print(f"\n{'='*60}\nMARKETPULSE PIPELINE — {start_time.strftime('%Y-%m-%d %H:%M')}\n{'='*60}")
-    
+    start_time = datetime.now(IST)
+    print(f"\n{'='*60}\nMARKETPULSE PIPELINE — {start_time.strftime('%Y-%m-%d %H:%M IST')}\n{'='*60}")
     try:
         headlines = fetch_news()
-        if not headlines: 
-            return
-        
+        if not headlines: return
         analyzed_headlines = process_all_headlines(headlines) 
-        if not analyzed_headlines:
-            return
+        if not analyzed_headlines: return
 
         df = pd.DataFrame(analyzed_headlines)
         headlines_df, sector_df = calculate_metrics(df)
@@ -245,12 +250,10 @@ def run_pipeline():
         print("  ✅ PIPELINE COMPLETE.\n")
     except Exception as e:
         print(f"  [!] FATAL PIPELINE ERROR: {e}")
-        traceback.print_exc()
 
 if __name__ == "__main__":
     lock_path = "/tmp/pipeline.lock" 
     with open(lock_path, "w") as f: f.write(datetime.now().isoformat())
-    try: 
-        run_pipeline()
+    try: run_pipeline()
     finally:
         if os.path.exists(lock_path): os.remove(lock_path)
