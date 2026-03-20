@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from sqlalchemy import create_engine
 import pandas as pd
@@ -11,7 +11,7 @@ import subprocess
 import sys
 import threading
 import traceback
-from datetime import datetime, timedelta
+from datetime import datetime
 from collections import defaultdict
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -31,15 +31,6 @@ engine = create_engine(DB_URL) if DB_URL else None
 
 app = FastAPI(title="MarketPulse AI API")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
-
-brief_usage:   dict[str, list[datetime]] = defaultdict(list)
-chat_sessions: dict[str, dict]           = {}
-BRIEF_MAX    = 2
-CHAT_LIMIT   = 100
-
-def get_ip(request: Request) -> str:
-    fwd = request.headers.get("X-Forwarded-For")
-    return fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "unknown")
 
 def safe(v):
     if v is None or pd.isna(v): return None
@@ -137,9 +128,59 @@ def pipeline_status():
         "is_running": is_running,
         "data_available": hl_count > 0,
     }
+
+
+# ==========================================
+# 🚀 1. THE BYPASS: DIRECT FORCE-RUN URL
+# ==========================================
+@app.get("/api/pipeline/force-run")
+def force_run_pipeline():
+    """Bypass Vercel entirely and force the pipeline to start."""
+    max_per_feed = 12
+    
+    def run():
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
+        
+        with open(LOG_FILE, "w") as log_f:
+            log_f.write(f"🚀 PIPELINE FORCED START AT {datetime.now().strftime('%H:%M:%S')}\n")
+            log_f.write(f"Bypassing Vercel. Fetching up to {max_per_feed} per feed.\n{'='*50}\n")
+            log_f.flush()
+            
+            try:
+                # Execute using direct 'python' engine instead of sys.executable
+                process = subprocess.Popen(
+                    ["python", os.path.join(DATA_DIR, "pipeline.py"), f"--max-per-feed={max_per_feed}"],
+                    cwd=DATA_DIR,
+                    stdout=log_f,
+                    stderr=subprocess.STDOUT,
+                    env=env,
+                    text=True
+                )
+                process.wait()
+                
+                with open(LOG_FILE, "a") as append_f:
+                    append_f.write(f"\n{'='*50}\n✅ SCRIPT FINISHED WITH EXIT CODE {process.returncode}\n")
+                    
+            except Exception as e:
+                with open(LOG_FILE, "a") as append_f:
+                    append_f.write(f"\n🔥 FATAL LAUNCH ERROR: {e}\n")
+                    append_f.write(traceback.format_exc())
+
+    threading.Thread(target=run, daemon=True).start()
+    
+    # Send user directly to the log viewer!
+    return HTMLResponse("""
+        <h1 style='font-family: sans-serif; text-align: center; margin-top: 50px;'>🚀 Pipeline Triggered!</h1>
+        <p style='text-align: center; font-family: sans-serif;'><a href='/api/logs/marketpulse-secret-view' style='font-size: 20px; color: blue;'>Click here to watch the live logs</a></p>
+    """)
+
+
+# ==========================================
+# 🟢 2. THE SECRET LOG VIEWER
+# ==========================================
 @app.get("/api/logs/marketpulse-secret-view")
 def view_live_logs():
-    """Secret endpoint to view live pipeline logs."""
     if not os.path.exists(LOG_FILE):
         return HTMLResponse("<body style='background:#000; color:#0f0; font-family:monospace; padding:20px;'>No logs yet. Run the pipeline!</body>")
     
@@ -157,22 +198,18 @@ def view_live_logs():
             .header {{ color: #fff; border-bottom: 1px solid #30363d; padding-bottom: 10px; margin-bottom: 20px; }}
         </style>
         <script>
-            // Auto-refresh the page every 3 seconds to see live updates
             setTimeout(() => location.reload(), 3000);
-            // Auto-scroll to the very bottom to see the newest logs
             window.onload = () => window.scrollTo(0, document.body.scrollHeight);
         </script>
     </head>
     <body>
-        <div class="header">
-            <h2>🟢 Live Pipeline Terminal</h2>
-            <p>Auto-refreshing every 3 seconds...</p>
-        </div>
+        <div class="header"><h2>🟢 Live Pipeline Terminal</h2></div>
         <pre>{logs}</pre>
     </body>
     </html>
     """
     return HTMLResponse(html_content)
+
 
 class PipelineRequest(BaseModel):
     secret: str
@@ -180,39 +217,8 @@ class PipelineRequest(BaseModel):
 
 @app.post("/api/pipeline/run")
 def trigger_pipeline(req: PipelineRequest):
-    if req.secret != PIPELINE_SECRET: 
-        raise HTTPException(status_code=401, detail="Invalid secret key.")
-    
-    max_per_feed = max(3, min(50, req.max_per_feed))
-    total_approx = max_per_feed * 37
-
-    def run():
-        print(f"\n🚀 BACKGROUND THREAD: Launching pipeline.py (Max/Feed: {max_per_feed})...")
-        try:
-            result = subprocess.run(
-                ["python", os.path.join(DATA_DIR, "pipeline.py"), f"--max-per-feed={max_per_feed}"],
-                cwd=DATA_DIR,
-                capture_output=True,
-                text=True
-            )
-            print("✅ PIPELINE SCRIPT FINISHED.")
-            if result.stdout:
-                print("\n📝 SCRIPT OUTPUT:\n", result.stdout)
-            if result.stderr:
-                print("\n❌ SCRIPT ERRORS:\n", result.stderr)
-        except Exception as e:
-            print(f"\n🔥 FATAL THREAD ERROR: {e}")
-            print(traceback.format_exc())
-
-    threading.Thread(target=run, daemon=True).start()
-
-    return {
-        "status": "started", 
-        "message": f"Diagnostic Pipeline started. Fetching ~{total_approx} headlines. Check Render logs.", 
-        "started_at": datetime.now().isoformat(), 
-        "max_per_feed": max_per_feed, 
-        "approx_total": total_approx
-    }
+    if req.secret != PIPELINE_SECRET: raise HTTPException(status_code=401, detail="Invalid secret key.")
+    return {"status": "Use the /api/pipeline/force-run link directly in your browser."}
 
 if __name__ == "__main__":
     import uvicorn
