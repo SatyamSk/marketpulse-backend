@@ -1,590 +1,279 @@
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+import feedparser
 import pandas as pd
 import numpy as np
-import os
 import json
-import subprocess
+import os
 import sys
-import threading
-from datetime import datetime, timedelta
-from collections import defaultdict
+import hashlib
+import concurrent.futures
+from datetime import datetime, timezone
 from openai import OpenAI
 from dotenv import load_dotenv
+from dateutil import parser as dateparser
+from sqlalchemy import create_engine
 
 load_dotenv()
 
-DATA_DIR        = os.path.dirname(os.path.abspath(__file__))
-client          = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-PIPELINE_SECRET = os.getenv("PIPELINE_SECRET", "marketpulse2024")
+DATA_DIR = os.path.dirname(os.path.abspath(__file__))
+client   = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-app = FastAPI(title="MarketPulse AI API")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+RSS_FEEDS = [
+    ("https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms",      "ET Markets"),
+    ("https://economictimes.indiatimes.com/economy/rssfeeds/1373380680.cms",      "ET Economy"),
+    ("https://economictimes.indiatimes.com/tech/rssfeeds/13357263.cms",           "ET Tech"),
+    ("https://economictimes.indiatimes.com/small-biz/startups/rssfeeds/13357270.cms","ET Startups"),
+    ("https://economictimes.indiatimes.com/industry/rssfeeds/13352306.cms",       "ET Industry"),
+    ("https://www.livemint.com/rss/markets",   "Livemint Markets"),
+    ("https://www.livemint.com/rss/companies", "Livemint Companies"),
+    ("https://www.livemint.com/rss/economy",   "Livemint Economy"),
+    ("https://www.livemint.com/rss/politics",  "Livemint Politics"),
+    ("https://www.business-standard.com/rss/markets-106.rss",        "BS Markets"),
+    ("https://www.business-standard.com/rss/economy-policy-101.rss", "BS Economy"),
+    ("https://www.business-standard.com/rss/finance-103.rss",        "BS Finance"),
+    ("https://www.business-standard.com/rss/companies-101.rss",      "BS Companies"),
+    ("https://www.moneycontrol.com/rss/marketreports.xml", "MC Market Reports"),
+    ("https://www.moneycontrol.com/rss/latestnews.xml",    "MC Latest News"),
+    ("https://www.moneycontrol.com/rss/business.xml",      "MC Business"),
+    ("https://www.financialexpress.com/market/feed/",  "Financial Express Markets"),
+    ("https://www.financialexpress.com/economy/feed/", "Financial Express Economy"),
+    ("https://www.thehindubusinessline.com/markets/?service=rss",   "BL Markets"),
+    ("https://www.thehindubusinessline.com/economy/?service=rss",   "BL Economy"),
+    ("https://www.thehindubusinessline.com/companies/?service=rss", "BL Companies"),
+    ("https://pib.gov.in/RssMain.aspx?ModId=6&Lang=1&Regid=3",   "PIB Economy"),
+    ("https://pib.gov.in/RssMain.aspx?ModId=37&Lang=1&Regid=3",  "PIB Commerce"),
+    ("https://pib.gov.in/RssMain.aspx?ModId=25&Lang=1&Regid=3",  "PIB Finance"),
+    ("https://pib.gov.in/RssMain.aspx?ModId=3&Lang=1&Regid=3",   "PIB Infrastructure"),
+    ("https://pib.gov.in/RssMain.aspx?ModId=14&Lang=1&Regid=3",  "PIB Defence"),
+    ("https://www.rbi.org.in/scripts/rss.aspx",                   "RBI"),
+    ("https://www.sebi.gov.in/sebi_data/rss/sebi_news.xml",       "SEBI"),
+    ("https://inc42.com/feed/",              "Inc42"),
+    ("https://entrackr.com/feed/",           "Entrackr"),
+    ("https://yourstory.com/feed",           "YourStory"),
+    ("https://mercomindia.com/feed/",        "Mercom India"),
+    ("https://www.constructionworld.in/feed","Construction World"),
+    ("https://www.cio.in/rss.xml",           "CIO India"),
+    ("https://feeds.reuters.com/reuters/INbusinessNews", "Reuters India"),
+    ("https://feeds.bbci.co.uk/news/business/rss.xml",  "BBC Business"),
+    ("https://www.thehindu.com/business/Economy/feeder/default.rss", "The Hindu Economy"),
+]
 
-brief_usage:   dict[str, list[datetime]] = defaultdict(list)
-chat_sessions: dict[str, dict]           = {}
+SECTOR_WEIGHTS = {
+    "Banking":       1.5, "Energy":        1.4, "IT":            1.2,
+    "Fintech":       1.2, "Manufacturing": 1.1, "Healthcare":    1.1,
+    "FMCG":          1.0, "Startup":       0.9, "Retail":        0.8,
+    "Other":         0.7,
+}
 
-BRIEF_MAX    = 2
-CHAT_LIMIT   = 100
-COOLDOWN_HRS = 14
+CATALYST_WEIGHTS = {
+    "government_contract":  1.7, "policy_change":        1.6, "pib_announcement":     1.6,
+    "rbi_action":           1.5, "sebi_action":          1.5, "fii_flow":             1.4,
+    "capex_announcement":   1.4, "earnings":             1.3, "sector_tailwind":      1.2,
+    "regulatory":           1.1, "management_change":    1.0, "global_event":         0.9,
+    "other":                0.7,
+}
 
+SIGNAL_HALF_LIFE = {"intraday": 4, "swing_2_5days": 48, "positional_weeks": 168}
 
-def get_db_engine():
-    DB_URL = os.getenv("DATABASE_URL", "")
-    if not DB_URL:
-        return None
-    if DB_URL.startswith("postgres://"):
-        DB_URL = DB_URL.replace("postgres://", "postgresql://", 1)
+VALID_SECTORS    = set(SECTOR_WEIGHTS.keys())
+VALID_SENTIMENTS = {"positive", "negative", "neutral"}
+
+def get_max_per_feed() -> int:
+    for arg in sys.argv:
+        if arg.startswith("--max-per-feed="):
+            try: return max(3, min(50, int(arg.split("=")[1])))
+            except: pass
+    return 12
+
+def parse_publish_time(entry: dict) -> datetime:
+    for field in ["published", "updated", "created"]:
+        val = entry.get(field)
+        if val:
+            try:
+                dt = dateparser.parse(val)
+                if dt and dt.tzinfo is None: dt = dt.replace(tzinfo=timezone.utc)
+                return dt
+            except: pass
+    return datetime.now(timezone.utc)
+
+def fetch_news() -> list[dict]:
+    max_per_feed = get_max_per_feed()
+    print(f"  Fetching — {max_per_feed} per feed · {len(RSS_FEEDS)} sources...")
+    headlines, seen = [], set()
+
+    for feed_url, feed_label in RSS_FEEDS:
+        try:
+            feed  = feedparser.parse(feed_url)
+            count = 0
+            for entry in feed.entries:
+                if count >= max_per_feed: break
+                title = entry.get("title", "").strip()
+                desc  = entry.get("summary", entry.get("description", "")).strip()
+                if len(title) < 10 or title in seen: continue
+                
+                content_hash = hashlib.md5(title[:60].lower().encode()).hexdigest()[:8]
+                if content_hash in seen: continue
+                seen.update([title, content_hash])
+
+                publish_dt = parse_publish_time(entry)
+                hours_old  = max(0, (datetime.now(timezone.utc) - publish_dt).total_seconds() / 3600)
+
+                headlines.append({
+                    "title": title, "description": desc[:800], "source": feed_label,
+                    "source_url": feed_url, "published": publish_dt.isoformat(),
+                    "hours_old": round(hours_old, 1), "url": entry.get("link", entry.get("url", "")).strip(),
+                    "is_govt_source": any(x in feed_label for x in ["PIB", "RBI", "SEBI"]),
+                })
+                count += 1
+        except Exception as e: print(f"    FAIL {feed_label} → {e}")
+    return headlines
+
+def classify_headline(headline: dict) -> dict:
+    sectors_list = ", ".join(sorted(VALID_SECTORS))
+    govt_note = "OFFICIAL REGULATORY source. Give impact_score >= 7 unless routine." if headline.get("is_govt_source") else ""
     try:
-        from sqlalchemy import create_engine
-        return create_engine(DB_URL)
-    except Exception as e:
-        print(f"  DB engine error: {e}")
-        return None
-
-
-def get_ip(request: Request) -> str:
-    fwd = request.headers.get("X-Forwarded-For")
-    if fwd:
-        return fwd.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
-
-
-def safe(v):
-    if v is None: return None
-    if isinstance(v, (bool, np.bool_)):    return bool(v)
-    if isinstance(v, (int, np.integer)):   return int(v)
-    if isinstance(v, (float, np.floating)):
-        if np.isnan(v) or np.isinf(v): return None
-        return float(v)
-    if isinstance(v, (np.ndarray, list)): return [safe(i) for i in v]
-    if isinstance(v, dict):               return {k: safe(val) for k, val in v.items()}
-    return str(v)
-
-
-def to_records(df: pd.DataFrame) -> list[dict]:
-    if df.empty: return []
-    df = df.replace([np.inf, -np.inf], np.nan).fillna(0)
-    return [{k: safe(v) for k, v in row.items()} for row in df.to_dict(orient="records")]
-
-
-def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
-    engine = get_db_engine()
-    if engine is not None:
-        try:
-            headlines = pd.read_sql_table("latest_headlines", engine)
-            benchmark = pd.read_sql_table("latest_sectors",   engine)
-            return headlines, benchmark
-        except Exception as e:
-            print(f"  Supabase load failed: {e} — trying CSV fallback")
-
-    hl_path  = os.path.join(DATA_DIR, "latest_headlines.csv")
-    sec_path = os.path.join(DATA_DIR, "latest_sectors.csv")
-    if not os.path.exists(hl_path) or not os.path.exists(sec_path):
-        raise HTTPException(
-            status_code=404,
-            detail="Pipeline data not found. Run the pipeline first."
-        )
-    return pd.read_csv(hl_path), pd.read_csv(sec_path)
-
-
-def classify_regime(avg_nss: float, avg_risk: float) -> dict:
-    if avg_nss > 20 and avg_risk < 20:
-        return {
-            "regime":            "Risk On",
-            "description":       "Broad bullish sentiment, low systemic risk. Momentum trades favored.",
-            "nifty_implication": "Gap-up open likely. Momentum trades have higher probability.",
-            "watch":             "High-momentum sectors showing positive velocity.",
-            "avoid":             "Defensive over-positioning not needed in Risk On conditions.",
-        }
-    elif avg_nss < -20 and avg_risk > 35:
-        return {
-            "regime":            "Panic",
-            "description":       "Widespread negative sentiment with high systemic risk. Defensive only.",
-            "nifty_implication": "Heavy selling pressure expected. Watch key support levels.",
-            "watch":             "Defensive sectors — Banking if NSS is stable.",
-            "avoid":             "All high-beta positions. Reduce exposure immediately.",
-        }
-    elif avg_nss > 0 and avg_risk > 25:
-        return {
-            "regime":            "Complacent",
-            "description":       "Positive headlines masking elevated underlying risk. Watch for reversal.",
-            "nifty_implication": "Deceptively calm open possible. Reversal risk elevated.",
-            "watch":             "Divergence signals — sectors where NSS and impact-weighted disagree.",
-            "avoid":             "Overleveraged positions. Risk is higher than headlines suggest.",
-        }
-    else:
-        return {
-            "regime":            "Risk Off",
-            "description":       "Cautious market conditions. Capital preservation favored.",
-            "nifty_implication": "Flat to gap-down open likely. Avoid chasing early moves.",
-            "watch":             "Sectors with positive velocity — early recovery signs.",
-            "avoid":             "High-leverage positions and sectors with negative velocity.",
-        }
-
-
-@app.get("/api/status")
-def status():
-    engine   = get_db_engine()
-    last_run = None
-    if engine is not None:
-        try:
-            status_df = pd.read_sql_table("pipeline_status", engine)
-            if not status_df.empty:
-                last_run = status_df.iloc[0]["last_run"]
-        except Exception:
-            pass
-    if not last_run:
-        path = os.path.join(DATA_DIR, "latest_sectors.csv")
-        if os.path.exists(path):
-            last_run = datetime.fromtimestamp(os.path.getmtime(path)).isoformat()
-    return {"status": "ok", "last_run": last_run, "server_time": datetime.now().isoformat()}
-
-
-@app.get("/api/dashboard")
-def get_dashboard():
-    headlines, benchmark = load_data()
-
-    if "geopolitical_risk" in headlines.columns:
-        headlines["geopolitical_risk"] = headlines["geopolitical_risk"].apply(
-            lambda x: str(x).lower() in ["true", "1", "yes"]
-        )
-
-    geo_hl   = headlines[headlines["geopolitical_risk"] == True] if "geopolitical_risk" in headlines.columns else pd.DataFrame()
-    avg_nss  = float(benchmark["composite_sentiment_index"].mean()) if "composite_sentiment_index" in benchmark.columns and not benchmark.empty else 0.0
-    avg_risk = float(benchmark["avg_weighted_risk"].mean()) if "avg_weighted_risk" in benchmark.columns and not benchmark.empty else 0.0
-    regime   = classify_regime(avg_nss, avg_risk)
-
-    pareto_df  = benchmark.sort_values("avg_weighted_risk", ascending=False).copy()
-    total_risk = max(pareto_df["avg_weighted_risk"].sum(), 1)
-    pareto_df["cumulative_pct"] = (
-        pareto_df["avg_weighted_risk"].cumsum() / total_risk * 100
-    ).round(1)
-
-    contagion = []
-    if not geo_hl.empty and "sector" in geo_hl.columns and "impact_score" in geo_hl.columns:
-        contagion = [
-            {"source": "Geopolitical Event", "target": r["sector"], "value": round(float(r["impact_score"]), 1)}
-            for _, r in geo_hl.groupby("sector")["impact_score"].mean().reset_index().iterrows()
-        ]
-
-    correlation    = {"sectors": [], "values": []}
-    velocity_trend = []
-    shock_headlines = []
-
-    engine = get_db_engine()
-
-    if engine is not None:
-        try:
-            master  = pd.read_sql_table("master_sector_scores", engine)
-            csi_col = "composite_sentiment_index"
-            if csi_col in master.columns and "run_date" in master.columns:
-                pivot = master.pivot_table(index="run_date", columns="sector", values=csi_col).fillna(0)
-                if len(pivot) >= 2:
-                    corr = pivot.corr().round(2)
-                    correlation = {
-                        "sectors": list(corr.columns),
-                        "values":  [[safe(v) for v in row] for row in corr.values.tolist()],
-                    }
-        except Exception:
-            pass
-
-        try:
-            trend = pd.read_sql_table("sector_trend_analysis", engine)
-            if "csi_3day_ma" in trend.columns and "run_date" in trend.columns:
-                pivot = trend.pivot_table(
-                    index="run_date", columns="sector", values="csi_3day_ma"
-                ).fillna(0).reset_index().rename(columns={"run_date": "date"})
-                pivot["run"] = range(1, len(pivot) + 1)
-                velocity_trend = to_records(pivot)
-        except Exception:
-            pass
-
-        try:
-            shock_df = pd.read_sql_table("shock_headlines", engine)
-            shock_headlines = to_records(shock_df)
-        except Exception:
-            pass
-
-    else:
-        # CSV fallbacks
-        master_path = os.path.join(DATA_DIR, "master_sector_scores.csv")
-        if os.path.exists(master_path):
-            try:
-                master  = pd.read_csv(master_path)
-                csi_col = "composite_sentiment_index"
-                if csi_col in master.columns and "run_date" in master.columns:
-                    pivot = master.pivot_table(index="run_date", columns="sector", values=csi_col).fillna(0)
-                    if len(pivot) >= 2:
-                        corr = pivot.corr().round(2)
-                        correlation = {
-                            "sectors": list(corr.columns),
-                            "values":  [[safe(v) for v in row] for row in corr.values.tolist()],
-                        }
-            except Exception:
-                pass
-
-        trend_path = os.path.join(DATA_DIR, "sector_trend_analysis.csv")
-        if os.path.exists(trend_path):
-            try:
-                trend = pd.read_csv(trend_path)
-                if "csi_3day_ma" in trend.columns and "run_date" in trend.columns:
-                    pivot = trend.pivot_table(
-                        index="run_date", columns="sector", values="csi_3day_ma"
-                    ).fillna(0).reset_index().rename(columns={"run_date": "date"})
-                    pivot["run"] = range(1, len(pivot) + 1)
-                    velocity_trend = to_records(pivot)
-            except Exception:
-                pass
-
-        shock_path = os.path.join(DATA_DIR, "shock_headlines.csv")
-        if os.path.exists(shock_path):
-            try:
-                shock_headlines = to_records(pd.read_csv(shock_path))
-            except Exception:
-                pass
-
-    shock_counts = {
-        "major": len([h for h in shock_headlines if h.get("shock_status") == "Major Shock"]),
-        "shock": len([h for h in shock_headlines if h.get("shock_status") == "Shock"]),
-        "watch": len([h for h in shock_headlines if h.get("shock_status") == "Watch"]),
-    }
-
-    msi      = {}
-    msi_path = os.path.join(DATA_DIR, "latest_msi.json")
-    if os.path.exists(msi_path):
-        with open(msi_path) as f:
-            msi = json.load(f)
-
-    high_risk = benchmark[benchmark["risk_level"] == "HIGH"]["sector"].tolist() if "risk_level" in benchmark.columns else []
-
-    return {
-        "last_updated":        datetime.now().isoformat(),
-        "market_regime":       regime,
-        "benchmark":           to_records(benchmark),
-        "headlines":           to_records(
-            headlines.sort_values("impact_score", ascending=False)
-            if "impact_score" in headlines.columns else headlines
-        ),
-        "pareto":              to_records(pareto_df[["sector", "avg_weighted_risk", "cumulative_pct"]]),
-        "contagion_flows":     contagion,
-        "correlation_matrix":  correlation,
-        "velocity_trend":      velocity_trend,
-        "shock_headlines":     shock_headlines,
-        "shock_counts":        shock_counts,
-        "market_stress_index": msi,
-        "summary_stats": {
-            "total_headlines":   len(headlines),
-            "geopolitical_flags": len(geo_hl),
-            "high_risk_sectors": high_risk,
-            "avg_nss":           round(avg_nss, 1),
-            "avg_risk":          round(avg_risk, 1),
-        },
-    }
-
-
-@app.get("/api/sectors/{sector_name}")
-def get_sector(sector_name: str):
-    headlines, benchmark = load_data()
-    sector_bm = benchmark[benchmark["sector"].str.lower() == sector_name.lower()]
-    if sector_bm.empty:
-        raise HTTPException(status_code=404, detail="Sector not found")
-    sector_hl = headlines[headlines["sector"].str.lower() == sector_name.lower()] if "sector" in headlines.columns else pd.DataFrame()
-    return {
-        "sector":    sector_name,
-        "metrics":   to_records(sector_bm)[0],
-        "headlines": to_records(
-            sector_hl.sort_values("impact_score", ascending=False)
-            if "impact_score" in sector_hl.columns else sector_hl
-        ),
-    }
-
-
-@app.get("/api/brief/status")
-def brief_status(request: Request):
-    ip     = get_ip(request)
-    now    = datetime.now()
-    cutoff = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    brief_usage[ip] = [t for t in brief_usage[ip] if t >= cutoff]
-    used      = len(brief_usage[ip])
-    remaining = max(0, BRIEF_MAX - used)
-    return {"allowed": remaining > 0, "used": used, "remaining": remaining, "limit": BRIEF_MAX}
-
-
-class BriefRequest(BaseModel):
-    top_headlines:  list
-    sector_summary: list
-    regime:         dict
-
-
-@app.post("/api/brief")
-def generate_brief(request: Request, req: BriefRequest):
-    ip     = get_ip(request)
-    now    = datetime.now()
-    cutoff = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    brief_usage[ip] = [t for t in brief_usage[ip] if t >= cutoff]
-    used      = len(brief_usage[ip])
-    remaining = max(0, BRIEF_MAX - used)
-
-    if remaining <= 0:
-        raise HTTPException(status_code=429, detail={
-            "error":   "daily_limit_reached",
-            "message": "Both daily brief generations used. Resets at midnight.",
-            "used": used, "limit": BRIEF_MAX, "remaining": 0,
-        })
-
-    brief_usage[ip].append(datetime.now())
-    used_now      = len(brief_usage[ip])
-    remaining_now = max(0, BRIEF_MAX - used_now)
-
-    hl_lines = []
-    for h in req.top_headlines[:8]:
-        shock = h.get("shock_status", "Normal")
-        tag   = " MAJOR SHOCK" if shock == "Major Shock" else " SHOCK" if shock == "Shock" else ""
-        hl_lines.append(
-            f"• [{h.get('sector','')}] {h.get('title','')} "
-            f"(Impact: {h.get('impact_score','')}/10, {str(h.get('sentiment','')).upper()}{tag})"
-        )
-
-    sec_lines = []
-    for s in sorted(req.sector_summary, key=lambda x: x.get("avg_weighted_risk", 0), reverse=True):
-        sec_lines.append(
-            f"• {s.get('sector',''):12} | Risk {s.get('avg_weighted_risk',0):5.1f} "
-            f"| CSI {s.get('composite_sentiment_index',0):+6.1f} "
-            f"| Velocity {s.get('sentiment_velocity',0):+5.1f} "
-            f"| {s.get('risk_level',''):6} | {s.get('sector_classification','')}"
-        )
-
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You are a senior market strategist writing a forward-looking market outlook "
-                    "for Indian intraday traders. Frame everything as EXPECTED conditions. "
-                    "Use language like 'expected to', 'likely to', 'anticipated', 'watch for'. "
-                    "Use markdown bold for key numbers and sector names. No disclaimers. No fluff. "
-                    "Every sentence must contain a specific number, sector name, or price level."
-                ),
-            },
-            {
-                "role": "user",
-                "content": f"""Write a forward-looking market outlook with EXACTLY this structure:
-
-## Expected Regime: {req.regime.get('regime', '')}
-(What this means for today's expected price action)
-
-## Nifty Expected Move
-(Specific direction with levels)
-
-## Highest Probability Risk Today
-(Single event most likely to move markets)
-
-## Sector Outlook
-**Expected Underperformer:** (sector — why, with scores)
-**Expected Outperformer:** (sector — why, with scores)
-
-## Key Events to Watch This Session
-(3 bullet points)
-
-## Trading Implication
-(One specific forward-looking call)
-
----
-Regime: {req.regime.get('regime', '')} — {req.regime.get('description', '')}
-Nifty: {req.regime.get('nifty_implication', '')}
-
-SECTOR DATA:
-{''.join(sec_lines)}
-
-TOP HEADLINES:
-{''.join(hl_lines)}""",
-            }
-        ],
-        temperature=0.25,
-        max_tokens=650,
-    )
-
-    return {
-        "brief":     response.choices[0].message.content,
-        "used":      used_now,
-        "remaining": remaining_now,
-        "limit":     BRIEF_MAX,
-    }
-
-
-class ChatRequest(BaseModel):
-    message:           str
-    history:           list
-    context_headlines: list
-    context_sectors:   list
-
-
-@app.post("/api/chat")
-def chat(request: Request, req: ChatRequest):
-    ip = get_ip(request)
-
-    if ip in chat_sessions:
-        session = chat_sessions[ip]
-        if datetime.now() < session.get("cooldown_until", datetime.now()):
-            mins = int((session["cooldown_until"] - datetime.now()).total_seconds() / 60)
-            raise HTTPException(status_code=429, detail={
-                "error":             "cooldown_active",
-                "message":           f"Word limit reached. Available again in {mins // 60}h {mins % 60}m.",
-                "minutes_remaining": mins,
-            })
-
-    word_count = len(req.message.split())
-    if word_count > CHAT_LIMIT:
-        raise HTTPException(status_code=400, detail={
-            "error":      "message_too_long",
-            "message":    f"Message is {word_count} words. Max is {CHAT_LIMIT}.",
-            "word_count": word_count, "limit": CHAT_LIMIT,
-        })
-
-    total_words = word_count + sum(
-        len(m.get("content", "").split()) for m in req.history if m.get("role") == "user"
-    )
-
-    if total_words > CHAT_LIMIT:
-        cooldown_until = datetime.now() + timedelta(hours=COOLDOWN_HRS)
-        chat_sessions[ip] = {"cooldown_until": cooldown_until}
-        raise HTTPException(status_code=429, detail={
-            "error":          "session_limit_reached",
-            "message":        f"Used {total_words} words. 14-hour cooldown activated.",
-            "total_words":    total_words, "limit": CHAT_LIMIT,
-            "cooldown_until": cooldown_until.isoformat(),
-        })
-
-    sector_ctx = "\n".join([
-        f"• {s.get('sector',''):12} | NSS {s.get('sentiment_nss',0):+6.1f} "
-        f"| CSI {s.get('composite_sentiment_index',0):+6.1f} "
-        f"| Risk {s.get('avg_weighted_risk',0):5.1f} ({s.get('risk_level','')})"
-        for s in req.context_sectors
-    ])
-
-    hl_ctx = "\n".join([
-        f"• [{h.get('sector','')}] {h.get('title','')} "
-        f"| {str(h.get('sentiment','')).upper()} "
-        f"| Impact: {h.get('impact_score','')}/10 "
-        f"| Shock: {h.get('shock_status','Normal')} "
-        f"| {h.get('one_line_insight','')}"
-        for h in req.context_headlines[:20]
-    ])
-
-    system_prompt = f"""You are a sharp market intelligence assistant for Indian intraday traders.
-Answer ONLY using the data below. Every number must come from this context.
-If something is not in the data, say "I don't have that data today."
-Always end with a concrete forward-looking trading implication.
-
-SECTOR DATA:
-{sector_ctx}
-
-HEADLINES:
-{hl_ctx}
-
-Date: {datetime.now().strftime('%d %B %Y')}"""
-
-    messages  = [{"role": "system", "content": system_prompt}]
-    messages += [{"role": m["role"], "content": m["content"]} for m in req.history[-6:]]
-    messages.append({"role": "user", "content": req.message})
-
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=messages,
-        temperature=0.2,
-        max_tokens=500,
-    )
-
-    return {
-        "answer":          response.choices[0].message.content,
-        "sources":         [],
-        "words_used":      total_words,
-        "words_remaining": max(0, CHAT_LIMIT - total_words),
-        "word_limit":      CHAT_LIMIT,
-    }
-
-
-@app.get("/api/pipeline/status")
-def pipeline_status():
-    hl_time  = None
-    hl_count = 0
-
-    engine = get_db_engine()
-    if engine is not None:
-        try:
-            status_df = pd.read_sql_table("pipeline_status", engine)
-            if not status_df.empty:
-                hl_time = status_df.iloc[0]["last_run"]
-            hl_count = len(pd.read_sql_table("latest_headlines", engine))
-        except Exception:
-            pass
-
-    if not hl_time:
-        hl_path = os.path.join(DATA_DIR, "latest_headlines.csv")
-        if os.path.exists(hl_path):
-            hl_time = datetime.fromtimestamp(os.path.getmtime(hl_path)).isoformat()
-            try:
-                hl_count = len(pd.read_csv(hl_path))
-            except Exception:
-                pass
-
-    is_running = False
-    lock_path  = "/tmp/pipeline.lock"
-    if os.path.exists(lock_path):
-        age        = datetime.now().timestamp() - os.path.getmtime(lock_path)
-        is_running = age < 600
-
-    return {
-        "last_headlines_update": hl_time,
-        "headlines_count":       hl_count,
-        "is_running":            is_running,
-        "data_available":        hl_count > 0,
-    }
-
-
-class PipelineRequest(BaseModel):
-    secret:       str
-    max_per_feed: int = 12
-
-
-@app.post("/api/pipeline/run")
-def trigger_pipeline(req: PipelineRequest):
-    if req.secret != PIPELINE_SECRET:
-        raise HTTPException(status_code=401, detail="Invalid secret key.")
-
-    max_per_feed = max(3, min(50, req.max_per_feed))
-    total_approx = max_per_feed * 37
-
-    def run():
-        subprocess.run(
-            [
-                sys.executable,
-                os.path.join(DATA_DIR, "pipeline.py"),
-                "--once",
-                f"--max-per-feed={max_per_feed}",
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": f"You are a senior equity analyst. Find NON-OBVIOUS opportunities. {govt_note} Return valid JSON."},
+                {"role": "user", "content": f"Analyze this headline. Return keys: sector [{sectors_list}], sentiment [positive, negative, neutral], sentiment_confidence (0-1), impact_score (1-10), valence (0-1), arousal (0-1), geopolitical_risk (bool), affected_companies (list max 4), second_order_beneficiaries (list max 4), catalyst_type [{','.join(CATALYST_WEIGHTS.keys())}], price_direction [bullish, bearish, neutral], time_horizon [intraday, swing_2_5days, positional_weeks], conviction [high, medium, low], macro_sensitivity [high, medium, low], one_line_insight (string max 300c), signal_reason (string max 300c), contrarian_flag (bool), contrarian_reason (string).\n\nHeadline: {headline['title']}\nDesc: {headline['description'][:400]}"}
             ],
-            cwd=DATA_DIR,
+            temperature=0.1, response_format={"type": "json_object"},
         )
+        res = json.loads(response.choices[0].message.content)
+        sector = res.get("sector", "Other")
+        return {
+            "sector": sector if sector in VALID_SECTORS else "Other",
+            "sentiment": res.get("sentiment", "neutral") if res.get("sentiment") in VALID_SENTIMENTS else "neutral",
+            "sentiment_confidence": float(np.clip(res.get("sentiment_confidence", 0.7), 0.0, 1.0)),
+            "impact_score": int(np.clip(res.get("impact_score", 5), 1, 10)),
+            "valence": float(np.clip(res.get("valence", 0.5), 0.0, 1.0)),
+            "arousal": float(np.clip(res.get("arousal", 0.5), 0.0, 1.0)),
+            "geopolitical_risk": bool(res.get("geopolitical_risk", False)),
+            "affected_companies": res.get("affected_companies", []),
+            "second_order_beneficiaries": res.get("second_order_beneficiaries", []),
+            "catalyst_type": res.get("catalyst_type", "other"),
+            "price_direction": res.get("price_direction", "neutral"),
+            "time_horizon": res.get("time_horizon", "intraday"),
+            "conviction": res.get("conviction", "low"),
+            "macro_sensitivity": res.get("macro_sensitivity", "medium"),
+            "one_line_insight": str(res.get("one_line_insight", ""))[:300],
+            "signal_reason": str(res.get("signal_reason", ""))[:300],
+            "contrarian_flag": bool(res.get("contrarian_flag", False)),
+            "contrarian_reason": str(res.get("contrarian_reason", ""))[:300],
+        }
+    except Exception:
+        return {"sector": "Other", "sentiment": "neutral", "sentiment_confidence": 0.5, "impact_score": 5, "valence": 0.5, "arousal": 0.5, "geopolitical_risk": False, "affected_companies": [], "second_order_beneficiaries": [], "catalyst_type": "other", "price_direction": "neutral", "time_horizon": "intraday", "conviction": "low", "macro_sensitivity": "medium", "one_line_insight": "", "signal_reason": "", "contrarian_flag": False, "contrarian_reason": ""}
 
-    threading.Thread(target=run, daemon=True).start()
+def process_all_headlines(headlines: list) -> list:
+    print(f"  Classifying {len(headlines)} headlines using High-Speed Threading...")
+    analyzed = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        future_to_h = {executor.submit(classify_headline, h): h for h in headlines}
+        for future in concurrent.futures.as_completed(future_to_h):
+            h = future_to_h[future]
+            try:
+                analyzed.append({**h, **future.result()})
+                print(f"    ✓ Analyzed: {h['title'][:50]}...")
+            except Exception as e: print(f"    [!] Failed: {e}")
+    return analyzed
 
-    return {
-        "status":       "started",
-        "message":      f"Pipeline started — fetching up to {total_approx} headlines from 37 sources.",
-        "started_at":   datetime.now().isoformat(),
-        "max_per_feed": max_per_feed,
-        "approx_total": total_approx,
-    }
+def calculate_metrics(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    df = df.copy()
+    df["sentiment_num"] = df["sentiment"].map({"positive": 1, "neutral": 0, "negative": -1}).fillna(0)
+    df["weighted_risk_score"] = (df["impact_score"].astype(float) * df["sentiment"].map({"positive": -0.5, "neutral": 0.0, "negative": 1.0}).fillna(0) * df["sector"].map(SECTOR_WEIGHTS).fillna(1.0) * df["geopolitical_risk"].apply(lambda x: 1.5 if bool(x) else 1.0) * df["is_govt_source"].apply(lambda x: 1.3 if bool(x) else 1.0))
+    df["weighted_risk_score"] = (df["weighted_risk_score"] * 10).clip(0, 100).round(2)
+    df["signal_decay"] = df.apply(lambda r: float(np.exp(-0.693 * float(r.get("hours_old", 0)) / SIGNAL_HALF_LIFE.get(str(r.get("time_horizon", "intraday")), 4))), axis=1).round(3)
+    df["recency_weighted_impact"] = (df["impact_score"].astype(float) * df["signal_decay"]).round(2)
+    df["catalyst_weight"] = df["catalyst_type"].map(CATALYST_WEIGHTS).fillna(0.7)
 
+    g_mean = float(df["impact_score"].astype(float).mean())
+    g_std = float(df["impact_score"].astype(float).std()) or 1.0
+    df["z_score"] = ((df["impact_score"].astype(float) - g_mean) / g_std).round(2)
+    df["shock_status"] = df["z_score"].apply(lambda z: "Major Shock" if z > 2.0 else "Shock" if z > 1.0 else "Watch" if z > 0.5 else "Normal")
+
+    sector_rows = []
+    for sector, group in df.groupby("sector"):
+        total = len(group)
+        pos, neg = int((group["sentiment"] == "positive").sum()), int((group["sentiment"] == "negative").sum())
+        nss = round(((pos / total) - (neg / total)) * 100, 1) if total > 0 else 0.0
+        iws = round((group["sentiment_num"] * group["impact_score"].astype(float)).sum() / float(group["impact_score"].astype(float).sum()) * 100, 1) if group["impact_score"].astype(float).sum() > 0 else 0.0
+        csi = round(nss * 0.40 + iws * 0.60, 1)
+        
+        avg_risk = round(float(group["weighted_risk_score"].mean()), 1)
+        avg_impact = round(float(group["impact_score"].astype(float).mean()), 1)
+        momentum_score = round((float((group.get("price_direction", pd.Series([])) == "bullish").mean()) - float((group.get("price_direction", pd.Series([])) == "bearish").mean())) * 100, 1)
+
+        sector_rows.append({
+            "sector": sector, "avg_weighted_risk": avg_risk, "sentiment_nss": nss, "composite_sentiment_index": csi,
+            "sentiment_velocity": 0.0, "risk_level": "HIGH" if avg_risk >= 50 else "MEDIUM" if avg_risk >= 25 else "LOW",
+            "avg_impact": avg_impact, "momentum_score": momentum_score,
+            "divergence_flag": "High Divergence" if abs(nss - iws) > 30 else "Normal",
+            "sector_classification": "Watch Closely" if avg_impact >= 5 and avg_risk >= 25 else "Monitor Risk",
+            "investment_signal": "BUY BIAS" if csi > 30 and risk < 25 and momentum_score > 20 else "NEUTRAL"
+        })
+    return df, pd.DataFrame(sector_rows)
+
+def calculate_market_stress_index(headlines_df: pd.DataFrame, sector_df: pd.DataFrame) -> dict:
+    if headlines_df.empty: return {"msi": 0, "level": "Low"}
+    risk_comp = min(float(sector_df["avg_weighted_risk"].mean()), 100) if not sector_df.empty else 0
+    shock_comp = min(headlines_df["shock_status"].isin(["Major Shock", "Shock"]).sum() / len(headlines_df) * 300, 100)
+    msi = round(risk_comp * 0.60 + shock_comp * 0.40, 1)
+    return {"msi": msi, "level": "Critical" if msi >= 75 else "High" if msi >= 50 else "Elevated" if msi >= 30 else "Low"}
+
+def save_all(headlines_df: pd.DataFrame, sector_df: pd.DataFrame, msi: dict):
+    # SUPABASE DATABASE CONNECTION
+    DB_URL = os.getenv("DATABASE_URL")
+    if DB_URL and DB_URL.startswith("postgres://"):
+        DB_URL = DB_URL.replace("postgres://", "postgresql://", 1)
+    
+    if not DB_URL:
+        print("  [!] ERROR: DATABASE_URL missing. Cannot save to Supabase.")
+        return
+
+    engine = create_engine(DB_URL)
+    run_date = datetime.now().strftime("%Y-%m-%d")
+    print("  Uploading data directly to Supabase PostgreSQL...")
+
+    headlines_df.astype(str).to_sql("latest_headlines", engine, if_exists="replace", index=False)
+    sector_df.astype(str).to_sql("latest_sectors", engine, if_exists="replace", index=False)
+    
+    pd.DataFrame([{"msi_data": json.dumps(msi)}]).to_sql("latest_msi", engine, if_exists="replace", index=False)
+    pd.DataFrame([{"last_run": datetime.now().isoformat()}]).to_sql("pipeline_status", engine, if_exists="replace", index=False)
+    
+    shock_cols = [c for c in ["title", "sector", "sentiment", "impact_score", "z_score", "shock_status", "one_line_insight", "geopolitical_risk", "url"] if c in headlines_df.columns]
+    headlines_df[headlines_df["shock_status"].isin(["Major Shock", "Shock", "Watch"])][shock_cols].astype(str).to_sql("shock_headlines", engine, if_exists="replace", index=False)
+    
+    headlines_df.assign(run_date=run_date).astype(str).to_sql("master_headlines", engine, if_exists="append", index=False)
+    sector_df.assign(run_date=run_date).astype(str).to_sql("master_sector_scores", engine, if_exists="append", index=False)
+    
+    try:
+        master = pd.read_sql_table("master_sector_scores", engine)
+        if "composite_sentiment_index" in master.columns:
+            master["composite_sentiment_index"] = pd.to_numeric(master["composite_sentiment_index"])
+            trend = master.groupby(["run_date", "sector"])["composite_sentiment_index"].mean().reset_index()
+            trend["csi_3day_ma"] = trend.groupby("sector")["composite_sentiment_index"].transform(lambda x: x.rolling(3, min_periods=1).mean()).round(2)
+            trend.to_sql("sector_trend_analysis", engine, if_exists="replace", index=False)
+    except Exception as e: print(f"  Trend error: {e}")
+    print("  ✓ Supabase upload complete!")
+
+def run_pipeline():
+    start_time = datetime.now()
+    print(f"\n{'='*60}\nMARKETPULSE PIPELINE — {start_time.strftime('%Y-%m-%d %H:%M')}\n{'='*60}")
+    
+    headlines = fetch_news()
+    if not headlines: return
+    
+    analyzed_headlines = process_all_headlines(headlines) # 10x Speed Threading!
+    df = pd.DataFrame(analyzed_headlines)
+    headlines_df, sector_df = calculate_metrics(df)
+    msi = calculate_market_stress_index(headlines_df, sector_df)
+    
+    save_all(headlines_df, sector_df, msi)
+    print("  PIPELINE COMPLETE.\n")
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=False)
+    lock_path = "/tmp/pipeline.lock" # Linux /tmp hides it from auto-reload!
+    with open(lock_path, "w") as f: f.write(datetime.now().isoformat())
+    try: run_pipeline()
+    finally:
+        if os.path.exists(lock_path): os.remove(lock_path)
