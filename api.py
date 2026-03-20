@@ -234,7 +234,87 @@ def view_live_logs():
     if not os.path.exists(LOG_FILE): return HTMLResponse("<body style='background:#000; color:#0f0; padding:20px;'>No logs yet.</body>")
     with open(LOG_FILE, "r") as f: logs = f.read()
     return HTMLResponse(f"<html><head><style>body {{ background:#0d1117; color:#58a6ff; font-family:monospace; padding:20px; }} pre {{ white-space: pre-wrap; }}</style><script>setTimeout(() => location.reload(), 3000); window.onload = () => window.scrollTo(0, document.body.scrollHeight);</script></head><body><h2>🟢 Live GitHub Sync Logs</h2><pre>{logs}</pre></body></html>")
+@app.get("/api/pipeline/status")
+def pipeline_status():
+    hl_time  = None
+    hl_count = 0
+    is_running = False
 
+    # Check lock file
+    lock_path = "/tmp/pipeline.lock"
+    if os.path.exists(lock_path):
+        age = datetime.now().timestamp() - os.path.getmtime(lock_path)
+        is_running = age < 900
+
+    # Read status from GitHub
+    try:
+        r = requests.get(f"{RAW_BASE_URL}pipeline_status.json", timeout=5)
+        if r.status_code == 200:
+            s = r.json()
+            hl_time = s.get("last_run")
+    except Exception:
+        pass
+
+    # Count headlines from GitHub
+    try:
+        df = pd.read_csv(f"{RAW_BASE_URL}latest_headlines.csv")
+        hl_count = len(df)
+    except Exception:
+        pass
+
+    return {
+        "last_headlines_update": hl_time,
+        "headlines_count":       hl_count,
+        "is_running":            is_running,
+        "data_available":        hl_count > 0,
+    }
+
+
+class PipelineRequest(BaseModel):
+    secret:       str
+    max_per_feed: int = 12
+
+
+@app.post("/api/pipeline/run")
+def trigger_pipeline(req: PipelineRequest):
+    if req.secret != PIPELINE_SECRET:
+        raise HTTPException(status_code=401, detail="Invalid secret key.")
+
+    max_per_feed = max(3, min(50, req.max_per_feed))
+    total_approx = max_per_feed * len([
+        "ET Markets", "ET Economy", "ET Tech", "ET Startups", "ET Industry",
+        "Livemint Markets", "Livemint Companies", "Livemint Economy",
+        "BS Markets", "BS Economy", "MC Latest News",
+        "Financial Express Markets", "PIB Economy", "RBI", "SEBI", "Reuters India"
+    ])
+
+    def run():
+        lock_path = "/tmp/pipeline.lock"
+        with open(lock_path, "w") as f:
+            f.write(datetime.now().isoformat())
+        try:
+            env = os.environ.copy()
+            env["PYTHONUNBUFFERED"] = "1"
+            subprocess.run(
+                [sys.executable, os.path.join(DATA_DIR, "pipeline.py"),
+                 f"--max-per-feed={max_per_feed}"],
+                cwd=DATA_DIR,
+                env=env,
+            )
+        finally:
+            if os.path.exists(lock_path):
+                os.remove(lock_path)
+
+    threading.Thread(target=run, daemon=True).start()
+
+    return {
+        "status":       "started",
+        "message":      f"Pipeline started — fetching up to {total_approx} headlines from 16 sources. Headlines from last 48 hours only.",
+        "started_at":   datetime.now().isoformat(),
+        "max_per_feed": max_per_feed,
+        "approx_total": total_approx,
+    }
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=False)
+    
