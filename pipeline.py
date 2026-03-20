@@ -191,6 +191,21 @@ def calculate_metrics(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
             "sector_classification": "Watch Closely" if avg_impact >= 5 and avg_risk >= 25 else "Monitor Risk",
             "investment_signal": "BUY BIAS" if csi > 30 and avg_risk < 25 and momentum_score > 20 else "NEUTRAL"
         })
+        try:
+            prev_url = f"https://raw.githubusercontent.com/{os.getenv('GITHUB_REPO', 'SatyamSk/MarketPulseAIData')}/main/latest_sectors.csv"
+            import requests as _req
+            r = _req.get(prev_url, timeout=5)
+            if r.status_code == 200:
+                import io
+                prev_df = pd.read_csv(io.StringIO(r.text))
+                if "composite_sentiment_index" in prev_df.columns and "sector" in prev_df.columns:
+                    prev_csi = dict(zip(prev_df["sector"], pd.to_numeric(prev_df["composite_sentiment_index"], errors="coerce")))
+                    for idx, row in sector_df.iterrows():
+                        prev = prev_csi.get(row["sector"])
+                        if prev is not None and not pd.isna(prev):
+                            sector_df.at[idx, "sentiment_velocity"] = round(float(row["composite_sentiment_index"]) - float(prev), 1)
+        except Exception as e:
+            print(f"  Velocity calc skipped: {e}")
     return df, pd.DataFrame(sector_rows)
 
 def calculate_market_stress_index(headlines_df: pd.DataFrame, sector_df: pd.DataFrame) -> dict:
