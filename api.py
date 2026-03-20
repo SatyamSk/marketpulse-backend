@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import create_engine
@@ -18,6 +19,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 DATA_DIR         = os.path.dirname(os.path.abspath(__file__))
+LOG_FILE         = os.path.join(DATA_DIR, "pipeline_live.log")
 client           = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 PIPELINE_SECRET  = os.getenv("PIPELINE_SECRET", "marketpulse2024")
 
