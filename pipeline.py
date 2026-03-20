@@ -216,7 +216,7 @@ def save_all(headlines_df: pd.DataFrame, sector_df: pd.DataFrame, msi: dict):
         print(f"  Uploading directly to GitHub Repository ({GITHUB_REPO})...")
         g = Github(token)
         repo = g.get_repo(GITHUB_REPO)
-        timestamp = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S IST")
+        timestamp = datetime.now(IST).isoformat()
 
         push_to_github(repo, "latest_headlines.csv", headlines_df.to_csv(index=False), f"Update headlines {timestamp}")
         push_to_github(repo, "latest_sectors.csv", sector_df.to_csv(index=False), f"Update sectors {timestamp}")
