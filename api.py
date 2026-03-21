@@ -173,42 +173,50 @@ class ChatRequest(BaseModel):
 @app.post("/api/chat")
 def chat_endpoint(req: ChatRequest):
     sector_ctx = "\n".join([
-        f"• {s.get('sector','')} | Risk {s.get('avg_weighted_risk',0)} ({s.get('risk_level','')}) | CSI {s.get('composite_sentiment_index',0)}"
+        f"• {s.get('sector',''):12} | Risk {s.get('avg_weighted_risk', 0)} ({s.get('risk_level','')}) "
+        f"| CSI {s.get('composite_sentiment_index', 0)} | Signal: {s.get('investment_signal', '')}"
         for s in req.context_sectors
     ])
+
     hl_ctx = "\n".join([
-        f"• [{h.get('sector','')}] {h.get('title','')} | Impact: {h.get('impact_score','')}/10 | {h.get('one_line_insight','')}"
-        for h in req.context_headlines[:15]
+        f"• [{h.get('sector','')}] {h.get('title','')} "
+        f"| {str(h.get('sentiment','')).upper()} "
+        f"| Impact: {h.get('impact_score','')}/10 "
+        f"| {h.get('one_line_insight','')}"
+        for h in req.context_headlines[:20]
     ])
+
+    has_data = bool(req.context_sectors or req.context_headlines)
 
     system_prompt = f"""You are MarketPulse AI — a sharp, friendly market intelligence assistant for Indian intraday traders.
 
 BEHAVIOR RULES:
-1. For greetings, small talk, or general questions (hi, hello, how are you, what can you do, thanks, etc.) — respond naturally and conversationally. Keep it brief and warm.
-2. For ANY market-related question — answer strictly using the data provided below. Every number must come from this context. If a specific piece of market data is not available, say "I don't have that in today's data."
-3. Always end market answers with a concrete, forward-looking trading implication.
-4. Never make up stock prices, company names, or figures not in the data.
+1. For greetings or casual messages (hi, hello, thanks, how are you, what can you do) — respond naturally and warmly in 1-2 sentences. Do not mention data or market.
+2. For ANY market question — answer strictly using the data below. Be punchy and direct. Give a clear actionable take.
+3. For stock-specific questions — use sector data and headlines to infer the answer. Don't say you don't have data if the sector is covered.
+4. Never say "I don't have specific stock recommendations" — instead give what you DO know from the data.
+5. Always end market answers with one concrete forward-looking implication.
 
-TODAY'S MARKET DATA ({datetime.now().strftime('%d %B %Y')}):
+TODAY'S DATA ({datetime.now().strftime('%d %B %Y')}):
+{'Data available.' if has_data else 'No pipeline data loaded yet.'}
 
 SECTOR SCORES:
-{sector_ctx}
+{sector_ctx if sector_ctx else 'No sector data.'}
 
 TOP HEADLINES:
-{hl_ctx}"""
+{hl_ctx if hl_ctx else 'No headlines.'}"""
 
     messages = [{"role": "system", "content": system_prompt}]
-    messages += [{"role": m["role"], "content": m["content"]} for m in req.history[-4:]]
+    messages += [{"role": m["role"], "content": m["content"]} for m in req.history[-6:]]
     messages.append({"role": "user", "content": req.message})
 
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=messages,
         temperature=0.3,
-        max_tokens=400,
+        max_tokens=450,
     )
     return {"answer": response.choices[0].message.content}
-
 # ==========================================
 # 🚀 DIAGNOSTICS & TRIGGER
 # ==========================================
