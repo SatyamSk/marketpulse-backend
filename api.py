@@ -314,6 +314,123 @@ def trigger_pipeline(req: PipelineRequest):
         "max_per_feed": max_per_feed,
         "approx_total": total_approx,
     }
+    from collections import defaultdict
+from datetime import timedelta
+
+brief_usage: dict = defaultdict(list)
+BRIEF_MAX = 2
+
+@app.get("/api/brief/status")
+def brief_status(request: Request):
+    ip     = request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or (request.client.host if request.client else "unknown")
+    now    = datetime.now()
+    cutoff = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    brief_usage[ip] = [t for t in brief_usage[ip] if t >= cutoff]
+    used      = len(brief_usage[ip])
+    remaining = max(0, BRIEF_MAX - used)
+    return {"allowed": remaining > 0, "used": used, "remaining": remaining, "limit": BRIEF_MAX}
+
+
+class BriefRequest(BaseModel):
+    top_headlines:  list
+    sector_summary: list
+    regime:         dict
+
+
+@app.post("/api/brief")
+def generate_brief(request: Request, req: BriefRequest):
+    ip     = request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or (request.client.host if request.client else "unknown")
+    now    = datetime.now()
+    cutoff = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    brief_usage[ip] = [t for t in brief_usage[ip] if t >= cutoff]
+    used      = len(brief_usage[ip])
+    remaining = max(0, BRIEF_MAX - used)
+
+    if remaining <= 0:
+        raise HTTPException(status_code=429, detail={
+            "error": "daily_limit_reached",
+            "message": "Both daily brief generations used. Resets at midnight.",
+            "used": used, "limit": BRIEF_MAX, "remaining": 0,
+        })
+
+    brief_usage[ip].append(datetime.now())
+    used_now      = len(brief_usage[ip])
+    remaining_now = max(0, BRIEF_MAX - used_now)
+
+    hl_lines = []
+    for h in req.top_headlines[:8]:
+        shock = h.get("shock_status", "Normal")
+        tag   = " MAJOR SHOCK" if shock == "Major Shock" else " SHOCK" if shock == "Shock" else ""
+        hl_lines.append(
+            f"• [{h.get('sector','')}] {h.get('title','')} "
+            f"(Impact: {h.get('impact_score','')}/10, {str(h.get('sentiment','')).upper()}{tag})"
+        )
+
+    sec_lines = []
+    for s in sorted(req.sector_summary, key=lambda x: x.get("avg_weighted_risk", 0), reverse=True):
+        sec_lines.append(
+            f"• {s.get('sector',''):12} | Risk {s.get('avg_weighted_risk', 0):5.1f} "
+            f"| CSI {s.get('composite_sentiment_index', 0):+6.1f} "
+            f"| {s.get('risk_level','')}"
+        )
+
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are a senior market strategist writing a forward-looking market outlook "
+                    "for Indian intraday traders. Frame everything as EXPECTED conditions. "
+                    "Use language like 'expected to', 'likely to', 'anticipated'. "
+                    "Use markdown bold for key numbers and sector names. No disclaimers. No fluff. "
+                    "Every sentence must contain a specific number, sector name, or directional call."
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"""Write a forward-looking market outlook with this structure:
+
+## Expected Regime: {req.regime.get('regime', '')}
+(What this means for today's price action)
+
+## Nifty Expected Move
+(Specific direction)
+
+## Highest Probability Risk Today
+(Single event most likely to move markets)
+
+## Sector Outlook
+**Expected Underperformer:** (sector and why)
+**Expected Outperformer:** (sector and why)
+
+## Key Events to Watch
+(3 bullet points)
+
+## Trading Implication
+(One specific forward-looking call)
+
+---
+Regime: {req.regime.get('regime', '')} — {req.regime.get('description', '')}
+Nifty: {req.regime.get('nifty_implication', '')}
+
+SECTOR DATA:
+{''.join(sec_lines)}
+
+TOP HEADLINES:
+{''.join(hl_lines)}""",
+            }
+        ],
+        temperature=0.25,
+        max_tokens=650,
+    )
+
+    return {
+        "brief":     response.choices[0].message.content,
+        "used":      used_now,
+        "remaining": remaining_now,
+        "limit":     BRIEF_MAX,
+    }
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=False)
