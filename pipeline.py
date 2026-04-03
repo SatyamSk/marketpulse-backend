@@ -91,9 +91,9 @@ def fetch_news() -> list[dict]:
                 publish_dt_ist = publish_dt.astimezone(IST)
                 
                 # 2. STRICT TIME HORIZON FILTER (Today or Yesterday ONLY)
-                hours_old_check = (now_ist - publish_dt_ist).total_seconds() / 3600
-                if hours_old_check > 48:
-                    continue  # Drop anything older than 48 hours
+                days_old = (now_ist.date() - publish_dt_ist.date()).days
+                if days_old > 1:
+                    continue # Brutally drop old news
                     
                 seen.update([title, content_hash])
                 hours_old = max(0, (now_ist - publish_dt_ist).total_seconds() / 3600)
@@ -173,40 +173,99 @@ def calculate_metrics(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
 
     sector_rows = []
     for sector, group in df.groupby("sector"):
-        total = len(group)
-        pos, neg = int((group["sentiment"] == "positive").sum()), int((group["sentiment"] == "negative").sum())
-        nss = round(((pos / total) - (neg / total)) * 100, 1) if total > 0 else 0.0
-        iws = round((group["sentiment_num"] * group["impact_score"].astype(float)).sum() / float(group["impact_score"].astype(float).sum()) * 100, 1) if group["impact_score"].astype(float).sum() > 0 else 0.0
-        csi = round(nss * 0.40 + iws * 0.60, 1)
-        
-        avg_risk = round(float(group["weighted_risk_score"].mean()), 1)
+        total  = len(group)
+        pos    = int((group["sentiment"] == "positive").sum())
+        neg    = int((group["sentiment"] == "negative").sum())
+        neu    = int((group["sentiment"] == "neutral").sum())
+        nss    = round(((pos / total) - (neg / total)) * 100, 1) if total > 0 else 0.0
+        total_impact = float(group["impact_score"].astype(float).sum())
+        iws    = round((group["sentiment_num"] * group["impact_score"].astype(float)).sum() / total_impact * 100, 1) if total_impact > 0 else 0.0
+        csi    = round(nss * 0.40 + iws * 0.60, 1)
+        avg_risk   = round(float(group["weighted_risk_score"].mean()), 1)
         avg_impact = round(float(group["impact_score"].astype(float).mean()), 1)
+        divergence = round(abs(nss - iws), 1)
         momentum_score = round((float((group.get("price_direction", pd.Series([])).eq("bullish")).mean()) - float((group.get("price_direction", pd.Series([])).eq("bearish")).mean())) * 100, 1)
+        contrarian_count = int(group.get("contrarian_flag", pd.Series([False])).apply(bool).sum())
+        govt_signals     = int(group.get("is_govt_source", pd.Series([False])).apply(bool).sum())
 
         sector_rows.append({
-            "sector": sector, "avg_weighted_risk": avg_risk, "sentiment_nss": nss, "composite_sentiment_index": csi,
-            "sentiment_velocity": 0.0, "risk_level": "HIGH" if avg_risk >= 50 else "MEDIUM" if avg_risk >= 25 else "LOW",
-            "avg_impact": avg_impact, "momentum_score": momentum_score,
-            "divergence_flag": "High Divergence" if abs(nss - iws) > 30 else "Normal",
-            "sector_classification": "Watch Closely" if avg_impact >= 5 and avg_risk >= 25 else "Monitor Risk",
-            "investment_signal": "BUY BIAS" if csi > 30 and avg_risk < 25 and momentum_score > 20 else "NEUTRAL"
+            "sector":                    sector,
+            "avg_weighted_risk":         avg_risk,
+            "sentiment_nss":             nss,
+            "impact_weighted_sentiment": iws,
+            "composite_sentiment_index": csi,
+            "sentiment_velocity":        0.0,
+            "risk_level":                "HIGH" if avg_risk >= 45 else "MEDIUM" if avg_risk >= 20 else "LOW",
+            "avg_impact":                avg_impact,
+            "total_mentions":            total,
+            "positive_count":            pos,
+            "negative_count":            neg,
+            "neutral_count":             neu,
+            "momentum_score":            momentum_score,
+            "divergence":                divergence,
+            "divergence_flag":           "High Divergence" if divergence > 30 else "Normal",
+            "govt_signals":              govt_signals,
+            "contrarian_count":          contrarian_count,
+            "geopolitical_flags":        int(group["geopolitical_risk"].apply(bool).sum()),
+            "valence":                   round(float(group.get("valence", pd.Series([0.5])).astype(float).mean()), 2),
+            "arousal":                   round(float(group.get("arousal",  pd.Series([0.5])).astype(float).mean()), 2),
+            "sector_classification":     "Watch Closely",
+            "investment_signal":         "NEUTRAL",
         })
-        try:
-            prev_url = f"https://raw.githubusercontent.com/{os.getenv('GITHUB_REPO', 'SatyamSk/MarketPulseAIData')}/main/latest_sectors.csv"
-            import requests as _req
-            r = _req.get(prev_url, timeout=5)
-            if r.status_code == 200:
-                import io
-                prev_df = pd.read_csv(io.StringIO(r.text))
-                if "composite_sentiment_index" in prev_df.columns and "sector" in prev_df.columns:
-                    prev_csi = dict(zip(prev_df["sector"], pd.to_numeric(prev_df["composite_sentiment_index"], errors="coerce")))
-                    for idx, row in sector_df.iterrows():
-                        prev = prev_csi.get(row["sector"])
-                        if prev is not None and not pd.isna(prev):
-                            sector_df.at[idx, "sentiment_velocity"] = round(float(row["composite_sentiment_index"]) - float(prev), 1)
-        except Exception as e:
-            print(f"  Velocity calc skipped: {e}")
-    return df, pd.DataFrame(sector_rows)
+
+    sector_df = pd.DataFrame(sector_rows)
+    if sector_df.empty:
+        return df, sector_df
+
+    # BCG classification relative to today's median
+    med_impact = sector_df["avg_impact"].median()
+    med_risk   = sector_df["avg_weighted_risk"].median()
+
+    def bcg_classify(row):
+        hi_i = row["avg_impact"]        >= med_impact
+        hi_r = row["avg_weighted_risk"] >= med_risk
+        if hi_i and hi_r:       return "Watch Closely"
+        elif hi_i and not hi_r: return "Opportunity"
+        elif not hi_i and hi_r: return "Monitor Risk"
+        else:                   return "Low Priority"
+
+    sector_df["sector_classification"] = sector_df.apply(bcg_classify, axis=1)
+
+    # Investment signal — pure Python deterministic
+    def investment_signal(row):
+        csi  = row["composite_sentiment_index"]
+        risk = row["avg_weighted_risk"]
+        mom  = row["momentum_score"]
+        div  = row["divergence_flag"]
+        vel  = row["sentiment_velocity"]
+        cont = row["contrarian_count"]
+        if csi > 30 and risk < 25 and mom > 15:    return "BUY BIAS"
+        if csi < -25 or (risk > 50 and mom < -20): return "AVOID"
+        if div == "High Divergence" and csi > 0:    return "CAUTION"
+        if mom > 10 and csi > 0 and vel >= 0:       return "IMPROVING"
+        if cont >= 2:                               return "CONTRARIAN WATCH"
+        return "NEUTRAL"
+
+    sector_df["investment_signal"] = sector_df.apply(investment_signal, axis=1)
+
+    # Velocity: compare CSI against previous run saved on GitHub
+    try:
+        import requests as _req, io as _io
+        prev_url = f"https://raw.githubusercontent.com/{os.getenv('GITHUB_REPO', 'SatyamSk/MarketPulseAIData')}/main/latest_sectors.csv"
+        r = _req.get(prev_url, timeout=6)
+        if r.status_code == 200:
+            prev_df = pd.read_csv(_io.StringIO(r.text))
+            if "composite_sentiment_index" in prev_df.columns and "sector" in prev_df.columns:
+                prev_csi = dict(zip(prev_df["sector"], pd.to_numeric(prev_df["composite_sentiment_index"], errors="coerce")))
+                for idx, row in sector_df.iterrows():
+                    prev = prev_csi.get(row["sector"])
+                    if prev is not None and not pd.isna(prev):
+                        sector_df.at[idx, "sentiment_velocity"] = round(float(row["composite_sentiment_index"]) - float(prev), 1)
+        sector_df["investment_signal"] = sector_df.apply(investment_signal, axis=1)
+    except Exception as e:
+        print(f"  Velocity calc skipped: {e}")
+
+    return df, sector_df
 
 def calculate_market_stress_index(headlines_df: pd.DataFrame, sector_df: pd.DataFrame) -> dict:
     if headlines_df.empty: return {"msi": 0, "level": "Low"}
@@ -231,7 +290,7 @@ def save_all(headlines_df: pd.DataFrame, sector_df: pd.DataFrame, msi: dict):
         print(f"  Uploading directly to GitHub Repository ({GITHUB_REPO})...")
         g = Github(token)
         repo = g.get_repo(GITHUB_REPO)
-        timestamp = datetime.now(IST).isoformat()
+        timestamp = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S IST")
 
         push_to_github(repo, "latest_headlines.csv", headlines_df.to_csv(index=False), f"Update headlines {timestamp}")
         push_to_github(repo, "latest_sectors.csv", sector_df.to_csv(index=False), f"Update sectors {timestamp}")
