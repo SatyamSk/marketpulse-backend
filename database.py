@@ -130,6 +130,7 @@ CREATE TABLE IF NOT EXISTS predictions (
     was_regime_correct INTEGER,
     sector_accuracy TEXT,
     overall_accuracy REAL,
+    learning_reflection TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -173,7 +174,19 @@ def init_db():
     with get_db() as conn:
         conn.executescript(SCHEMA)
         _seed_source_reliability(conn)
+        _migrate(conn)
     print("  ✓ Database initialized.")
+
+
+def _migrate(conn: sqlite3.Connection):
+    """Lightweight schema migrations for existing DBs."""
+    try:
+        cols = [r["name"] for r in conn.execute("PRAGMA table_info(predictions)").fetchall()]
+        if "learning_reflection" not in cols:
+            conn.execute("ALTER TABLE predictions ADD COLUMN learning_reflection TEXT")
+    except Exception:
+        # Non-fatal; table might not exist yet on first boot.
+        pass
 
 
 def _seed_source_reliability(conn):

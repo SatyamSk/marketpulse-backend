@@ -8,3 +8,4 @@ python-dotenv
 python-dateutil
 PyGithub==2.3.0
 requests
+anthropic>=0.25.0
