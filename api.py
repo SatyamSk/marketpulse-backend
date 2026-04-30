@@ -24,6 +24,55 @@ import requests as http_requests
 
 app = FastAPI(title="MarketPulse AI API")
 
+# ── Durable storage fallback (GitHub Data Repo) ─────────────────────
+GITHUB_DATA_REPO = os.getenv("GITHUB_DATA_REPO", "SatyamSk/MarketPulseAIData")
+RAW_BASE = f"https://raw.githubusercontent.com/{GITHUB_DATA_REPO}/main"
+
+def _fetch_raw_text(path: str) -> str | None:
+    try:
+        r = http_requests.get(f"{RAW_BASE}/{path.lstrip('/')}", timeout=15)
+        if not r.ok:
+            return None
+        return r.text
+    except Exception:
+        return None
+
+def _fetch_github_snapshot() -> tuple[list[dict], list[dict], dict | None, str | None]:
+    """
+    Returns: (headlines, sectors, msi, last_run_str)
+    """
+    headlines_csv = _fetch_raw_text("latest_headlines.csv")
+    sectors_csv = _fetch_raw_text("latest_sectors.csv")
+    msi_json = _fetch_raw_text("latest_msi.json")
+    status_json = _fetch_raw_text("pipeline_status.json")
+
+    if not headlines_csv or not sectors_csv:
+        return ([], [], None, None)
+
+    try:
+        hdf = pd.read_csv(pd.io.common.StringIO(headlines_csv))
+        sdf = pd.read_csv(pd.io.common.StringIO(sectors_csv))
+        headlines = hdf.replace({np.nan: None}).to_dict(orient="records")
+        sectors = sdf.replace({np.nan: None}).to_dict(orient="records")
+    except Exception:
+        return ([], [], None, None)
+
+    msi = None
+    if msi_json:
+        try:
+            msi = json.loads(msi_json)
+        except Exception:
+            msi = None
+
+    last_run = None
+    if status_json:
+        try:
+            last_run = json.loads(status_json).get("last_run")
+        except Exception:
+            last_run = None
+
+    return (headlines, sectors, msi, last_run)
+
 # ── KEEP-ALIVE: Prevent Render free tier from sleeping ─────────────
 def _keep_alive_worker():
     """Self-ping every 13 minutes to prevent Render spin-down."""
@@ -139,6 +188,13 @@ def get_dashboard():
     # IMPORTANT: Never 404 here. The frontend treats non-200 as "pipeline disconnected".
     # Instead return an empty-but-valid dashboard payload so the UI can render a proper "no data yet" state.
     if not headlines_raw:
+        # Fallback: try to load the latest snapshot from GitHub durable storage.
+        gh_headlines, gh_sectors, gh_msi, gh_last_run = _fetch_github_snapshot()
+        if gh_headlines:
+            headlines_raw = gh_headlines
+            sectors_raw = gh_sectors
+            pipeline_info = pipeline_info or {"completed_at": gh_last_run, "msi": (gh_msi or {}).get("msi", 0), "msi_level": (gh_msi or {}).get("level", "Low")}
+        else:
         empty_regime = {
             "regime": "Risk Off",
             "description": "No pipeline run detected yet. Run the pipeline (Admin → Run Agent Intelligence) to generate today's analysis.",
@@ -284,11 +340,24 @@ def pipeline_status():
     if os.path.exists(lock_path):
         age = datetime.now().timestamp() - os.path.getmtime(lock_path)
         is_running = age < 900
+
+    # If Render wiped the DB, fall back to GitHub snapshot status.
+    if not info:
+        _, _, _, gh_last_run = _fetch_github_snapshot()
+        if gh_last_run:
+            return {
+                "last_headlines_update": gh_last_run,
+                "headlines_count": 0,
+                "is_running": is_running,
+                "data_available": True,
+                "storage": "github",
+            }
     return {
         "last_headlines_update": info.get("completed_at") if info else None,
         "headlines_count": info.get("headline_count", 0) if info else 0,
         "is_running": is_running,
         "data_available": info is not None,
+        "storage": "sqlite",
     }
 
 class PipelineRequest(BaseModel):
