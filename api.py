@@ -20,8 +20,31 @@ ADMIN_SECRET    = os.getenv("ADMIN_SECRET", PIPELINE_SECRET)
 IST             = timezone(timedelta(hours=5, minutes=30))
 
 import database as db
+import requests as http_requests
 
 app = FastAPI(title="MarketPulse AI API")
+
+# ── KEEP-ALIVE: Prevent Render free tier from sleeping ─────────────
+def _keep_alive_worker():
+    """Self-ping every 13 minutes to prevent Render spin-down."""
+    import time as _time
+    render_url = os.getenv("RENDER_EXTERNAL_URL", "")
+    if not render_url:
+        print("  [i] RENDER_EXTERNAL_URL not set — keep-alive disabled.")
+        return
+    health_url = f"{render_url}/api/health"
+    print(f"  ✓ Keep-alive active: pinging {health_url} every 13 min")
+    while True:
+        _time.sleep(780)  # 13 minutes
+        try:
+            http_requests.get(health_url, timeout=10)
+        except Exception:
+            pass
+
+@app.on_event("startup")
+def startup_event():
+    """Start keep-alive thread on server boot."""
+    threading.Thread(target=_keep_alive_worker, daemon=True).start()
 
 # ── SECURITY: Restricted CORS ─────────────────────────────────────
 ALLOWED_ORIGINS = [
@@ -234,6 +257,7 @@ def pipeline_status():
 class PipelineRequest(BaseModel):
     secret: str
     max_per_feed: int = 12
+    mode: str = "agent"  # "agent" (autonomous) or "legacy" (old pipeline)
 
 @app.post("/api/pipeline/run")
 def trigger_pipeline(req: PipelineRequest, request: Request):
@@ -243,23 +267,36 @@ def trigger_pipeline(req: PipelineRequest, request: Request):
 
     max_per_feed = max(3, min(50, req.max_per_feed))
     total_approx = max_per_feed * 16
+    use_agent = req.mode == "agent"
 
     def run():
         lock_path = os.path.join(DATA_DIR, "pipeline.lock")
         with open(lock_path, "w") as f:
             f.write(datetime.now().isoformat())
         try:
-            env = os.environ.copy()
-            env["PYTHONUNBUFFERED"] = "1"
             with open(LOG_FILE, "w") as log_f:
-                log_f.write(f"🚀 Pipeline started at {datetime.now(IST).strftime('%H:%M:%S IST')}\n{'='*50}\n")
+                mode_label = "AGENT" if use_agent else "LEGACY"
+                log_f.write(f"🚀 {mode_label} pipeline at {datetime.now(IST).strftime('%H:%M:%S IST')}\n{'='*50}\n")
                 log_f.flush()
-                subprocess.run(
-                    [sys.executable, os.path.join(DATA_DIR, "pipeline.py"), f"--max-per-feed={max_per_feed}"],
-                    cwd=DATA_DIR, env=env, stdout=log_f, stderr=subprocess.STDOUT,
-                )
-            with open(LOG_FILE, "a") as f:
-                f.write(f"\n{'='*50}\n✅ Pipeline complete.\n")
+
+            if use_agent:
+                # Run autonomous agent
+                from agent import run_agent_pipeline
+                result = run_agent_pipeline()
+                with open(LOG_FILE, "a") as f:
+                    f.write(f"\nAgent result: {json.dumps(result, default=str)[:2000]}\n")
+                    f.write(f"\n{'='*50}\n✅ Agent pipeline complete.\n")
+            else:
+                # Legacy pipeline
+                env = os.environ.copy()
+                env["PYTHONUNBUFFERED"] = "1"
+                with open(LOG_FILE, "a") as log_f:
+                    subprocess.run(
+                        [sys.executable, os.path.join(DATA_DIR, "pipeline.py"), f"--max-per-feed={max_per_feed}"],
+                        cwd=DATA_DIR, env=env, stdout=log_f, stderr=subprocess.STDOUT,
+                    )
+                with open(LOG_FILE, "a") as f:
+                    f.write(f"\n{'='*50}\n✅ Legacy pipeline complete.\n")
         except Exception as e:
             with open(LOG_FILE, "a") as f:
                 f.write(f"\n🔥 ERROR: {e}\n{traceback.format_exc()}")
@@ -268,13 +305,22 @@ def trigger_pipeline(req: PipelineRequest, request: Request):
                 os.remove(lock_path)
 
     threading.Thread(target=run, daemon=True).start()
+    msg = "Agent intelligence gathering started" if use_agent else f"Legacy pipeline started — ~{total_approx} headlines"
     return {
         "status": "started",
-        "message": f"Pipeline started — fetching up to {total_approx} headlines from 16 sources.",
+        "mode": "agent" if use_agent else "legacy",
+        "message": msg,
         "started_at": datetime.now(IST).isoformat(),
-        "max_per_feed": max_per_feed,
-        "approx_total": total_approx,
     }
+
+# ── AGENT RESULT ───────────────────────────────────────────────────
+@app.get("/api/agent/result")
+def get_agent_result():
+    result_path = os.path.join(DATA_DIR, "agent_result.json")
+    if not os.path.exists(result_path):
+        raise HTTPException(status_code=404, detail="No agent analysis available yet. Run the agent pipeline first.")
+    with open(result_path, "r") as f:
+        return json.load(f)
 
 # ── BRIEF ──────────────────────────────────────────────────────────
 @app.get("/api/brief/status")
