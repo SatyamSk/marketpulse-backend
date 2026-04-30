@@ -1,0 +1,33 @@
+name: Daily agent run (optional)
+
+on:
+  schedule:
+    # 03:45 UTC ≈ 09:15 IST. Adjust as desired.
+    - cron: "45 3 * * 1-5"
+  workflow_dispatch: {}
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger pipeline (agent mode)
+        run: |
+          if [ -z "${{ secrets.RENDER_PIPELINE_RUN_URL }}" ]; then
+            echo "Missing secret RENDER_PIPELINE_RUN_URL (e.g. https://<your-render-service>.onrender.com/api/pipeline/run)"
+            exit 1
+          fi
+          if [ -z "${{ secrets.ADMIN_TOKEN }}" ]; then
+            echo "Missing secret ADMIN_TOKEN (sha256 of ADMIN_SECRET). You can also generate it by calling /api/admin/login."
+            exit 1
+          fi
+          if [ -z "${{ secrets.PIPELINE_SECRET }}" ]; then
+            echo "Missing secret PIPELINE_SECRET (same as your Render env var)."
+            exit 1
+          fi
+
+          curl -fsS -X POST "${{ secrets.RENDER_PIPELINE_RUN_URL }}" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.ADMIN_TOKEN }}" \
+            -d "{\"secret\":\"${{ secrets.PIPELINE_SECRET }}\",\"max_per_feed\":14,\"mode\":\"agent\"}" | head -c 800
+

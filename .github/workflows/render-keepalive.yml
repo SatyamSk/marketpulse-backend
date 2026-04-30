@@ -1,0 +1,21 @@
+name: Render keep-alive (free tier)
+
+on:
+  schedule:
+    # Every 10 minutes (UTC). This wakes Render if it slept.
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Ping health endpoint
+        run: |
+          if [ -z "${{ secrets.RENDER_HEALTH_URL }}" ]; then
+            echo "Missing secret RENDER_HEALTH_URL (e.g. https://<your-render-service>.onrender.com/api/health)"
+            exit 1
+          fi
+          curl -fsS "${{ secrets.RENDER_HEALTH_URL }}" | head -c 500 || true
+

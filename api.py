@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
@@ -126,8 +126,35 @@ def get_dashboard():
     pipeline_info = db.get_latest_pipeline_info()
     accuracy = db.get_accuracy_stats(30)
 
+    # IMPORTANT: Never 404 here. The frontend treats non-200 as "pipeline disconnected".
+    # Instead return an empty-but-valid dashboard payload so the UI can render a proper "no data yet" state.
     if not headlines_raw:
-        raise HTTPException(status_code=404, detail="No pipeline data available. Run the pipeline first.")
+        empty_regime = {
+            "regime": "Risk Off",
+            "description": "No pipeline run detected yet. Run the pipeline (Admin → Run Agent Intelligence) to generate today's analysis.",
+            "nifty_implication": "No call available until the first run completes.",
+            "watch": "—",
+            "avoid": "—",
+        }
+        return {
+            "last_updated": None,
+            "market_regime": empty_regime,
+            "benchmark": [],
+            "headlines": [],
+            "pareto": [],
+            "contagion_flows": [],
+            "velocity_trend": [],
+            "shock_headlines": [],
+            "shock_counts": {"major": 0, "shock": 0, "watch": 0},
+            "market_stress_index": {"msi": 0, "level": "Low"},
+            "model_accuracy": {"accuracy": 0, "total_predictions": 0, "correct": 0},
+            "summary_stats": {
+                "total_headlines": 0,
+                "geopolitical_flags": 0,
+                "avg_nss": 0,
+                "avg_risk": 0,
+            },
+        }
 
     headlines_df = pd.DataFrame(headlines_raw)
     benchmark_df = pd.DataFrame(sectors_raw)
@@ -432,6 +459,45 @@ def view_logs(request: Request):
         return {"logs": "No logs yet."}
     with open(LOG_FILE, "r") as f:
         return {"logs": f.read()[-5000:]}
+
+# ── PUBLIC STREAM: "agent thinking" / live pipeline logs (SSE) ─────
+@app.get("/api/pipeline/stream")
+def stream_pipeline_logs():
+    """
+    Server-Sent Events stream of pipeline logs.
+    This is intentionally read-only and contains no secrets; it powers the optional "Show agent thinking" UI.
+    """
+    def event_generator():
+        # Ensure file exists so EventSource doesn't immediately fail.
+        if not os.path.exists(LOG_FILE):
+            yield "event: status\ndata: No pipeline logs yet. Run the pipeline.\n\n"
+            return
+
+        try:
+            with open(LOG_FILE, "r", encoding="utf-8", errors="ignore") as f:
+                # Start at end so new viewers don't download huge logs.
+                f.seek(0, os.SEEK_END)
+                while True:
+                    line = f.readline()
+                    if line:
+                        # SSE requires each event end with a blank line.
+                        msg = line.rstrip("\n").replace("\r", "")
+                        yield f"data: {msg}\n\n"
+                    else:
+                        time.sleep(0.5)
+        except Exception as e:
+            yield f"event: error\ndata: Stream error: {str(e)[:120]}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            # Render/proxies sometimes buffer; this helps streaming.
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 @app.post("/api/admin/backtest")
 def trigger_backtest(request: Request):
