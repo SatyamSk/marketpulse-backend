@@ -129,9 +129,16 @@ TOOLS = [
 RSS_MAP = {
     "ET_Markets": "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms",
     "ET_Economy": "https://economictimes.indiatimes.com/economy/rssfeeds/1373380680.cms",
-    "Livemint": "https://www.livemint.com/rss/markets",
+    "ET_Tech": "https://economictimes.indiatimes.com/tech/rssfeeds/13357263.cms",
+    "ET_Startups": "https://economictimes.indiatimes.com/small-biz/startups/rssfeeds/13357270.cms",
+    "ET_Industry": "https://economictimes.indiatimes.com/industry/rssfeeds/13352306.cms",
+    "Livemint_Markets": "https://www.livemint.com/rss/markets",
+    "Livemint_Companies": "https://www.livemint.com/rss/companies",
+    "Livemint_Economy": "https://www.livemint.com/rss/economy",
     "BS_Markets": "https://www.business-standard.com/rss/markets-106.rss",
+    "BS_Economy": "https://www.business-standard.com/rss/economy-policy-101.rss",
     "Moneycontrol": "https://www.moneycontrol.com/rss/latestnews.xml",
+    "FinancialExpress": "https://www.financialexpress.com/market/feed/",
     "Reuters": "https://feeds.reuters.com/reuters/INbusinessNews",
     "PIB": "https://pib.gov.in/RssMain.aspx?ModId=6&Lang=1&Regid=3",
     "RBI": "https://www.rbi.org.in/scripts/rss.aspx",
@@ -217,7 +224,9 @@ def _exec_fetch_rss(sources, max_per_source=10):
         except Exception as e:
             results.append({"error": f"{src}: {str(e)[:80]}"})
     
-    return json.dumps({"count": len([r for r in results if "title" in r]), "headlines": results[:100]})
+    # Don't hard-cap to 100; user controls max_per_source. Still keep a safety cap.
+    headlines = [r for r in results if isinstance(r, dict) and r.get("title")]
+    return json.dumps({"count": len(headlines), "headlines": headlines[:600]})
 
 def _exec_fetch_macro_snapshot():
     from macro_fetcher import fetch_all_macro_data
@@ -446,7 +455,7 @@ def run_agent(max_iterations=8):
     return {"error": "Max iterations reached", "iterations": max_iterations}
 
 
-def run_agent_pipeline():
+def run_agent_pipeline(max_per_source: int = 14):
     """
     Run the full agent pipeline:
     1. Agent gathers data and produces analysis
@@ -460,6 +469,7 @@ def run_agent_pipeline():
     run_id = create_pipeline_run()
     _log(f"  Pipeline run #{run_id}")
     
+    # Run the "brain" agent (reasoning + optional web verification). Data collection is enforced below.
     result = run_agent(max_iterations=10)
     
     if "error" in result and not result.get("regime"):
@@ -497,14 +507,24 @@ def run_agent_pipeline():
         from macro_fetcher import fetch_all_macro_data
         macro = fetch_all_macro_data()
     if not rss_headlines:
-        rss_payload = json.loads(_exec_fetch_rss(["ALL"], max_per_source=10))
+        rss_payload = json.loads(_exec_fetch_rss(["ALL"], max_per_source=int(max_per_source)))
         rss_headlines = [h for h in rss_payload.get("headlines", []) if h.get("title")]
     if not analyzed:
         from macro_fetcher import format_macro_context_for_gpt
         macro_context = format_macro_context_for_gpt(macro)
-        titles = [h.get("title", "") for h in rss_headlines[:80] if h.get("title")]
-        analyzed_payload = json.loads(_exec_analyze_batch(titles[:30], macro_context))
-        analyzed = analyzed_payload.get("analyzed", [])
+        titles = [h.get("title", "") for h in rss_headlines if h.get("title")]
+
+        _log(f"  RSS fetched: {len(titles)} headlines across {len(RSS_MAP)} sources (max_per_source={max_per_source})")
+        analyzed_all: list[dict[str, Any]] = []
+        for i in range(0, len(titles), 30):
+            batch = titles[i:i+30]
+            _log(f"  Analyzing headlines batch {i//30+1}: {len(batch)} items")
+            analyzed_payload = json.loads(_exec_analyze_batch(batch, macro_context))
+            batch_analyzed = analyzed_payload.get("analyzed", []) if isinstance(analyzed_payload, dict) else []
+            if not isinstance(batch_analyzed, list):
+                batch_analyzed = []
+            analyzed_all.extend(batch_analyzed)
+        analyzed = analyzed_all
 
     # Merge analyzed results back onto raw RSS headlines by index
     merged_rows: list[dict[str, Any]] = []

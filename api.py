@@ -388,7 +388,7 @@ def trigger_pipeline(req: PipelineRequest, request: Request):
             if use_agent:
                 # Run autonomous agent
                 from agent import run_agent_pipeline
-                result = run_agent_pipeline()
+                result = run_agent_pipeline(max_per_source=max_per_feed)
                 with open(LOG_FILE, "a") as f:
                     f.write(f"\nAgent result: {json.dumps(result, default=str)[:2000]}\n")
                     f.write(f"\n{'='*50}\n✅ Agent pipeline complete.\n")
