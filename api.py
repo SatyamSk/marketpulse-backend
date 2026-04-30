@@ -118,6 +118,16 @@ def health_check():
         "last_pipeline": pipeline_info.get("completed_at") if pipeline_info else None,
     }
 
+@app.get("/api/version")
+def version():
+    # Render exposes these for builds; if absent, still return something useful.
+    return {
+        "service": "marketpulse-backend",
+        "render_git_commit": os.getenv("RENDER_GIT_COMMIT"),
+        "render_service_id": os.getenv("RENDER_SERVICE_ID"),
+        "timestamp": datetime.now(IST).isoformat(),
+    }
+
 # ── DASHBOARD ──────────────────────────────────────────────────────
 @app.get("/api/dashboard")
 def get_dashboard():
