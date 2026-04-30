@@ -6,6 +6,5 @@ numpy
 feedparser
 python-dotenv
 python-dateutil
-SQLAlchemy
-psycopg2-binary
 PyGithub==2.3.0
+requests

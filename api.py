@@ -1,203 +1,202 @@
-from fastapi import FastAPI, HTTPException, Request
-from datetime import datetime, timedelta
-from collections import defaultdict
+from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from datetime import datetime, timedelta, timezone
+from collections import defaultdict
 import pandas as pd
 import numpy as np
-import os
-import json
-import requests
-import subprocess
-import sys
-import threading
-import traceback
+import os, json, subprocess, sys, threading, traceback, hashlib, hmac, time
 from openai import OpenAI
 from dotenv import load_dotenv
 
 load_dotenv()
 
-DATA_DIR         = os.path.dirname(os.path.abspath(__file__))
-LOG_FILE         = os.path.join(DATA_DIR, "pipeline_live.log")
-client           = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-PIPELINE_SECRET  = os.getenv("PIPELINE_SECRET", "marketpulse2024")
+DATA_DIR        = os.path.dirname(os.path.abspath(__file__))
+LOG_FILE        = os.path.join(DATA_DIR, "pipeline_live.log")
+client          = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+PIPELINE_SECRET = os.getenv("PIPELINE_SECRET", "marketpulse2024")
+ADMIN_SECRET    = os.getenv("ADMIN_SECRET", PIPELINE_SECRET)
+IST             = timezone(timedelta(hours=5, minutes=30))
 
-RAW_BASE_URL = "https://raw.githubusercontent.com/SatyamSk/MarketPulseAIData/main/"
+import database as db
 
 app = FastAPI(title="MarketPulse AI API")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
+# ── SECURITY: Restricted CORS ─────────────────────────────────────
+ALLOWED_ORIGINS = [
+    "https://marketpulsewithai.vercel.app",
+    "http://localhost:5173", "http://localhost:3000", "http://localhost:8080",
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+    allow_credentials=True,
+)
+
+# ── RATE LIMITING ──────────────────────────────────────────────────
+chat_limiter: dict = defaultdict(list)
+CHAT_LIMIT = 15  # per minute
+brief_usage: dict = defaultdict(list)
+BRIEF_MAX = 2
+
+def get_client_ip(request: Request) -> str:
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    return forwarded.split(",")[0].strip() if forwarded else (request.client.host if request.client else "unknown")
+
+def check_chat_rate(request: Request):
+    ip = get_client_ip(request)
+    now = time.time()
+    chat_limiter[ip] = [t for t in chat_limiter[ip] if now - t < 60]
+    if len(chat_limiter[ip]) >= CHAT_LIMIT:
+        raise HTTPException(status_code=429, detail="Rate limit exceeded. Max 15 requests/minute.")
+    chat_limiter[ip].append(now)
+
+def verify_admin(request: Request):
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing authorization token.")
+    token = auth.replace("Bearer ", "")
+    expected = hashlib.sha256(ADMIN_SECRET.encode()).hexdigest()
+    if not hmac.compare_digest(token, expected):
+        raise HTTPException(status_code=401, detail="Invalid admin token.")
+
+# ── HELPERS ────────────────────────────────────────────────────────
 def safe(v):
-    if v is None or pd.isna(v): return None
+    if v is None or (isinstance(v, float) and np.isnan(v)): return None
     if isinstance(v, (bool, np.bool_)): return bool(v)
     if isinstance(v, (int, np.integer)): return int(v)
     if isinstance(v, (float, np.floating)): return float(v)
     return str(v)
 
-def to_records(df: pd.DataFrame) -> list[dict]:
-    if df.empty: return []
-    return [{k: safe(v) for k, v in row.items()} for row in df.to_dict(orient="records")]
-
-def load_data():
-    try:
-        headlines = pd.read_csv(f"{RAW_BASE_URL}latest_headlines.csv")
-        sectors = pd.read_csv(f"{RAW_BASE_URL}latest_sectors.csv")
-        
-        for col in ["impact_score", "sentiment_confidence", "valence", "arousal"]:
-            if col in headlines.columns: headlines[col] = pd.to_numeric(headlines[col], errors="coerce")
-        for col in ["avg_weighted_risk", "composite_sentiment_index", "sentiment_nss", "sentiment_velocity", "avg_impact", "momentum_score"]:
-            if col in sectors.columns: sectors[col] = pd.to_numeric(sectors[col], errors="coerce")
-            
-        return headlines, sectors
-    except Exception as e:
-        raise HTTPException(status_code=404, detail=f"GitHub Data not found. Error: {e}")
+def to_records(data: list[dict]) -> list[dict]:
+    return [{k: safe(v) for k, v in row.items()} for row in data] if data else []
 
 def classify_regime(avg_nss: float, avg_risk: float) -> dict:
     if avg_nss > 20 and avg_risk < 20:
-        return {
-            "regime":            "Risk On",
-            "description":       "Broad bullish sentiment, low systemic risk. Momentum trades favored.",
-            "nifty_implication": "Gap-up open likely. Momentum trades have higher probability.",
-            "watch":             "High-momentum sectors showing positive velocity.",
-            "avoid":             "Defensive over-positioning not needed in Risk On conditions.",
-        }
+        return {"regime": "Risk On", "description": "Broad bullish sentiment, low systemic risk. Momentum trades favored.", "nifty_implication": "Gap-up open likely. Momentum trades have higher probability.", "watch": "High-momentum sectors showing positive velocity.", "avoid": "Defensive over-positioning not needed in Risk On conditions."}
     elif avg_nss < -20 and avg_risk > 35:
-        return {
-            "regime":            "Panic",
-            "description":       "Widespread negative sentiment with high systemic risk. Defensive only.",
-            "nifty_implication": "Heavy selling pressure expected. Watch key support levels.",
-            "watch":             "Defensive sectors — Banking if NSS is stable.",
-            "avoid":             "All high-beta positions. Reduce exposure immediately.",
-        }
+        return {"regime": "Panic", "description": "Widespread negative sentiment with high systemic risk. Defensive only.", "nifty_implication": "Heavy selling pressure expected. Watch key support levels.", "watch": "Defensive sectors — Banking if NSS is stable.", "avoid": "All high-beta positions. Reduce exposure immediately."}
     elif avg_nss > 0 and avg_risk > 25:
-        return {
-            "regime":            "Complacent",
-            "description":       "Positive headlines masking elevated underlying risk. Watch for reversal.",
-            "nifty_implication": "Deceptively calm open possible. Reversal risk elevated.",
-            "watch":             "Divergence signals — sectors where NSS and impact-weighted disagree.",
-            "avoid":             "Overleveraged positions. Risk is higher than headlines suggest.",
-        }
+        return {"regime": "Complacent", "description": "Positive headlines masking elevated underlying risk. Watch for reversal.", "nifty_implication": "Deceptively calm open possible. Reversal risk elevated.", "watch": "Divergence signals — sectors where NSS and impact-weighted disagree.", "avoid": "Overleveraged positions. Risk is higher than headlines suggest."}
     else:
-        return {
-            "regime":            "Risk Off",
-            "description":       "Cautious market conditions. Capital preservation favored.",
-            "nifty_implication": "Flat to gap-down open likely. Avoid chasing early moves.",
-            "watch":             "Sectors with positive velocity — early recovery signs.",
-            "avoid":             "High-leverage positions and sectors with negative velocity.",
-        }
+        return {"regime": "Risk Off", "description": "Cautious market conditions. Capital preservation favored.", "nifty_implication": "Flat to gap-down open likely. Avoid chasing early moves.", "watch": "Sectors with positive velocity — early recovery signs.", "avoid": "High-leverage positions and sectors with negative velocity."}
 
+# ── HEALTH CHECK ───────────────────────────────────────────────────
+@app.get("/api/health")
+def health_check():
+    pipeline_info = db.get_latest_pipeline_info()
+    return {
+        "status": "ok",
+        "timestamp": datetime.now(IST).isoformat(),
+        "database": "connected",
+        "last_pipeline": pipeline_info.get("completed_at") if pipeline_info else None,
+    }
 
+# ── DASHBOARD ──────────────────────────────────────────────────────
 @app.get("/api/dashboard")
 def get_dashboard():
-    headlines, benchmark = load_data()
+    headlines_raw = db.get_latest_headlines()
+    sectors_raw = db.get_latest_sectors()
+    pipeline_info = db.get_latest_pipeline_info()
+    accuracy = db.get_accuracy_stats(30)
 
-    if "geopolitical_risk" in headlines.columns:
-        headlines["geopolitical_risk"] = headlines["geopolitical_risk"].apply(
-            lambda x: str(x).lower() in ["true", "1", "yes"]
-        )
+    if not headlines_raw:
+        raise HTTPException(status_code=404, detail="No pipeline data available. Run the pipeline first.")
 
-    geo_hl   = headlines[headlines["geopolitical_risk"] == True] if "geopolitical_risk" in headlines.columns else pd.DataFrame()
-    avg_nss  = float(benchmark["composite_sentiment_index"].mean()) if not benchmark.empty else 0.0
-    avg_risk = float(benchmark["avg_weighted_risk"].mean()) if not benchmark.empty else 0.0
+    headlines_df = pd.DataFrame(headlines_raw)
+    benchmark_df = pd.DataFrame(sectors_raw)
+
+    # Geopolitical filter
+    geo_hl = [h for h in headlines_raw if h.get("geopolitical_risk")]
+
+    avg_nss  = float(benchmark_df["composite_sentiment_index"].mean()) if not benchmark_df.empty else 0.0
+    avg_risk = float(benchmark_df["avg_weighted_risk"].mean()) if not benchmark_df.empty else 0.0
     regime   = classify_regime(avg_nss, avg_risk)
 
-    pareto_df  = benchmark.sort_values("avg_weighted_risk", ascending=False).copy()
-    total_risk = max(pareto_df["avg_weighted_risk"].sum(), 1)
-    pareto_df["cumulative_pct"] = (
-        pareto_df["avg_weighted_risk"].cumsum() / total_risk * 100
-    ).round(1)
+    # Pareto
+    pareto = []
+    if not benchmark_df.empty:
+        pareto_df = benchmark_df.sort_values("avg_weighted_risk", ascending=False).copy()
+        total_risk = max(pareto_df["avg_weighted_risk"].sum(), 1)
+        pareto_df["cumulative_pct"] = (pareto_df["avg_weighted_risk"].cumsum() / total_risk * 100).round(1)
+        pareto = pareto_df[["sector", "avg_weighted_risk", "cumulative_pct"]].to_dict(orient="records")
 
-    # Build contagion_flows from geo-flagged headlines
+    # Contagion flows
     contagion = []
-    if not geo_hl.empty and "sector" in geo_hl.columns and "impact_score" in geo_hl.columns:
-        contagion = [
-            {
-                "source": "Geopolitical Event",
-                "target": r["sector"],
-                "value":  round(float(r["impact_score"]), 1),
-            }
-            for _, r in geo_hl.groupby("sector")["impact_score"].mean().reset_index().iterrows()
-        ]
+    if geo_hl:
+        sector_impacts = {}
+        for h in geo_hl:
+            s = h.get("sector", "Other")
+            sector_impacts.setdefault(s, []).append(float(h.get("impact_score", 5)))
+        contagion = [{"source": "Geopolitical Event", "target": s, "value": round(np.mean(v), 1)} for s, v in sector_impacts.items()]
 
-    shock_headlines, msi = [], {}
-    try:
-        shock_df = pd.read_csv(f"{RAW_BASE_URL}shock_headlines.csv")
-        shock_headlines = to_records(shock_df)
-    except Exception:
-        pass
-    try:
-        msi_req = requests.get(f"{RAW_BASE_URL}latest_msi.json")
-        if msi_req.status_code == 200:
-            msi = msi_req.json()
-    except Exception:
-        pass
-
+    # Shock headlines
+    shock_headlines = [h for h in headlines_raw if h.get("shock_status") in ("Major Shock", "Shock", "Watch")]
     shock_counts = {
         "major": len([h for h in shock_headlines if h.get("shock_status") == "Major Shock"]),
         "shock": len([h for h in shock_headlines if h.get("shock_status") == "Shock"]),
         "watch": len([h for h in shock_headlines if h.get("shock_status") == "Watch"]),
     }
 
+    # MSI
+    msi = {"msi": pipeline_info.get("msi", 0), "level": pipeline_info.get("msi_level", "Low")} if pipeline_info else {"msi": 0, "level": "Low"}
+
     return {
-        "last_updated":        datetime.now().isoformat(),
-        "market_regime":       regime,
-        "benchmark":           to_records(benchmark),
-        "headlines":           to_records(
-            headlines.sort_values("impact_score", ascending=False)
-            if "impact_score" in headlines.columns else headlines
-        ),
-        "pareto":              to_records(pareto_df[["sector", "avg_weighted_risk", "cumulative_pct"]]),
-        "contagion_flows":     contagion,
-        "velocity_trend":      [],
-        "shock_headlines":     shock_headlines,
-        "shock_counts":        shock_counts,
+        "last_updated": pipeline_info.get("completed_at") if pipeline_info else None,
+        "market_regime": regime,
+        "benchmark": to_records(sectors_raw),
+        "headlines": to_records(sorted(headlines_raw, key=lambda h: float(h.get("impact_score", 0)), reverse=True)),
+        "pareto": pareto,
+        "contagion_flows": contagion,
+        "velocity_trend": [],
+        "shock_headlines": to_records(shock_headlines),
+        "shock_counts": shock_counts,
         "market_stress_index": msi,
+        "model_accuracy": {"accuracy": accuracy["accuracy"], "total_predictions": accuracy["total"], "correct": accuracy["correct"]},
         "summary_stats": {
-            "total_headlines":    len(headlines),
+            "total_headlines": len(headlines_raw),
             "geopolitical_flags": len(geo_hl),
-            "avg_nss":            round(avg_nss, 1),
-            "avg_risk":           round(avg_risk, 1),
+            "avg_nss": round(avg_nss, 1),
+            "avg_risk": round(avg_risk, 1),
         },
     }
 
-# ==========================================
-# 🤖 THE COPILOT CHAT ENDPOINT
-# ==========================================
+# ── CHAT ───────────────────────────────────────────────────────────
 class ChatRequest(BaseModel):
-    message: str
-    history: list
-    context_headlines: list
-    context_sectors: list
+    message: str = Field(..., max_length=2000)
+    history: list = Field(default_factory=list, max_length=20)
+    context_headlines: list = Field(default_factory=list, max_length=25)
+    context_sectors: list = Field(default_factory=list, max_length=15)
 
 @app.post("/api/chat")
-def chat_endpoint(req: ChatRequest):
+def chat_endpoint(req: ChatRequest, request: Request):
+    check_chat_rate(request)
+
     sector_ctx = "\n".join([
         f"• {s.get('sector',''):12} | Risk {s.get('avg_weighted_risk', 0)} ({s.get('risk_level','')}) "
         f"| CSI {s.get('composite_sentiment_index', 0)} | Signal: {s.get('investment_signal', '')}"
-        for s in req.context_sectors
+        for s in req.context_sectors[:10]
     ])
-
     hl_ctx = "\n".join([
-        f"• [{h.get('sector','')}] {h.get('title','')} "
-        f"| {str(h.get('sentiment','')).upper()} "
-        f"| Impact: {h.get('impact_score','')}/10 "
-        f"| {h.get('one_line_insight','')}"
+        f"• [{h.get('sector','')}] {h.get('title','')} | {str(h.get('sentiment','')).upper()} "
+        f"| Impact: {h.get('impact_score','')}/10 | {h.get('one_line_insight','')}"
         for h in req.context_headlines[:20]
     ])
-
     has_data = bool(req.context_sectors or req.context_headlines)
 
     system_prompt = f"""You are MarketPulse AI — a sharp, friendly market intelligence assistant for Indian intraday traders.
 
 BEHAVIOR RULES:
-1. For greetings or casual messages (hi, hello, thanks, how are you, what can you do) — respond naturally and warmly in 1-2 sentences. Do not mention data or market.
-2. For ANY market question — answer strictly using the data below. Be punchy and direct. Give a clear actionable take.
-3. For stock-specific questions — use sector data and headlines to infer the answer. Don't say you don't have data if the sector is covered.
-4. Never say "I don't have specific stock recommendations" — instead give what you DO know from the data.
+1. For greetings or casual messages — respond naturally and warmly in 1-2 sentences.
+2. For ANY market question — answer strictly using the data below. Be punchy and direct.
+3. For stock-specific questions — use sector data and headlines to infer. Don't say you don't have data if the sector is covered.
+4. Never say "I don't have specific stock recommendations" — give what you DO know.
 5. Always end market answers with one concrete forward-looking implication.
 
-TODAY'S DATA ({datetime.now().strftime('%d %B %Y')}):
+TODAY'S DATA ({datetime.now(IST).strftime('%d %B %Y')}):
 {'Data available.' if has_data else 'No pipeline data loaded yet.'}
 
 SECTOR SCORES:
@@ -208,239 +207,201 @@ TOP HEADLINES:
 
     messages = [{"role": "system", "content": system_prompt}]
     messages += [{"role": m["role"], "content": m["content"]} for m in req.history[-6:]]
-    messages.append({"role": "user", "content": req.message})
+    messages.append({"role": "user", "content": req.message[:2000]})
 
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=messages,
-        temperature=0.3,
-        max_tokens=450,
-    )
-    return {"answer": response.choices[0].message.content}
-# ==========================================
-# 🚀 DIAGNOSTICS & TRIGGER
-# ==========================================
-@app.get("/api/pipeline/force-run")
-def force_run_pipeline():
-    max_per_feed = 12
-    def run():
-        env = os.environ.copy()
-        env["PYTHONUNBUFFERED"] = "1"
-        with open(LOG_FILE, "w") as log_f:
-            log_f.write(f"🚀 OVERRIDING GITHUB REPOSITORY AT {datetime.now().strftime('%H:%M:%S')}\n{'='*50}\n")
-            log_f.flush()
-            try:
-                process = subprocess.Popen(["python", os.path.join(DATA_DIR, "pipeline.py"), f"--max-per-feed={max_per_feed}"], cwd=DATA_DIR, stdout=log_f, stderr=subprocess.STDOUT, env=env, text=True)
-                process.wait()
-                with open(LOG_FILE, "a") as append_f: append_f.write(f"\n{'='*50}\n✅ UPLOAD COMPLETE.\n")
-            except Exception as e:
-                with open(LOG_FILE, "a") as append_f: append_f.write(f"\n🔥 FATAL ERROR: {e}\n{traceback.format_exc()}")
-    threading.Thread(target=run, daemon=True).start()
-    return HTMLResponse("<h1 style='text-align: center; margin-top: 50px;'>🚀 Writing to GitHub!</h1><p style='text-align: center;'><a href='/api/logs/marketpulse-secret-view'>Watch Live Logs</a></p>")
+    try:
+        response = client.chat.completions.create(model="gpt-4o-mini", messages=messages, temperature=0.3, max_tokens=450)
+        return {"answer": response.choices[0].message.content}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"AI service temporarily unavailable: {str(e)[:100]}")
 
-@app.get("/api/logs/marketpulse-secret-view")
-def view_live_logs():
-    if not os.path.exists(LOG_FILE): return HTMLResponse("<body style='background:#000; color:#0f0; padding:20px;'>No logs yet.</body>")
-    with open(LOG_FILE, "r") as f: logs = f.read()
-    return HTMLResponse(f"<html><head><style>body {{ background:#0d1117; color:#58a6ff; font-family:monospace; padding:20px; }} pre {{ white-space: pre-wrap; }}</style><script>setTimeout(() => location.reload(), 3000); window.onload = () => window.scrollTo(0, document.body.scrollHeight);</script></head><body><h2>🟢 Live GitHub Sync Logs</h2><pre>{logs}</pre></body></html>")
+# ── PIPELINE ───────────────────────────────────────────────────────
 @app.get("/api/pipeline/status")
 def pipeline_status():
-    hl_time  = None
-    hl_count = 0
+    info = db.get_latest_pipeline_info()
+    lock_path = os.path.join(DATA_DIR, "pipeline.lock")
     is_running = False
-
-    # Check lock file
-    lock_path = "/tmp/pipeline.lock"
     if os.path.exists(lock_path):
         age = datetime.now().timestamp() - os.path.getmtime(lock_path)
         is_running = age < 900
-
-    # Read status from GitHub
-    try:
-        r = requests.get(f"{RAW_BASE_URL}pipeline_status.json", timeout=5)
-        if r.status_code == 200:
-            s = r.json()
-            hl_time = s.get("last_run")
-    except Exception:
-        pass
-
-    # Count headlines from GitHub
-    try:
-        df = pd.read_csv(f"{RAW_BASE_URL}latest_headlines.csv")
-        hl_count = len(df)
-    except Exception:
-        pass
-
     return {
-        "last_headlines_update": hl_time,
-        "headlines_count":       hl_count,
-        "is_running":            is_running,
-        "data_available":        hl_count > 0,
+        "last_headlines_update": info.get("completed_at") if info else None,
+        "headlines_count": info.get("headline_count", 0) if info else 0,
+        "is_running": is_running,
+        "data_available": info is not None,
     }
 
-
 class PipelineRequest(BaseModel):
-    secret:       str
+    secret: str
     max_per_feed: int = 12
 
-
 @app.post("/api/pipeline/run")
-def trigger_pipeline(req: PipelineRequest):
+def trigger_pipeline(req: PipelineRequest, request: Request):
+    verify_admin(request)
     if req.secret != PIPELINE_SECRET:
         raise HTTPException(status_code=401, detail="Invalid secret key.")
 
     max_per_feed = max(3, min(50, req.max_per_feed))
-    total_approx = max_per_feed * len([
-        "ET Markets", "ET Economy", "ET Tech", "ET Startups", "ET Industry",
-        "Livemint Markets", "Livemint Companies", "Livemint Economy",
-        "BS Markets", "BS Economy", "MC Latest News",
-        "Financial Express Markets", "PIB Economy", "RBI", "SEBI", "Reuters India"
-    ])
+    total_approx = max_per_feed * 16
 
     def run():
-        lock_path = "/tmp/pipeline.lock"
+        lock_path = os.path.join(DATA_DIR, "pipeline.lock")
         with open(lock_path, "w") as f:
             f.write(datetime.now().isoformat())
         try:
             env = os.environ.copy()
             env["PYTHONUNBUFFERED"] = "1"
-            subprocess.run(
-                [sys.executable, os.path.join(DATA_DIR, "pipeline.py"),
-                 f"--max-per-feed={max_per_feed}"],
-                cwd=DATA_DIR,
-                env=env,
-            )
+            with open(LOG_FILE, "w") as log_f:
+                log_f.write(f"🚀 Pipeline started at {datetime.now(IST).strftime('%H:%M:%S IST')}\n{'='*50}\n")
+                log_f.flush()
+                subprocess.run(
+                    [sys.executable, os.path.join(DATA_DIR, "pipeline.py"), f"--max-per-feed={max_per_feed}"],
+                    cwd=DATA_DIR, env=env, stdout=log_f, stderr=subprocess.STDOUT,
+                )
+            with open(LOG_FILE, "a") as f:
+                f.write(f"\n{'='*50}\n✅ Pipeline complete.\n")
+        except Exception as e:
+            with open(LOG_FILE, "a") as f:
+                f.write(f"\n🔥 ERROR: {e}\n{traceback.format_exc()}")
         finally:
             if os.path.exists(lock_path):
                 os.remove(lock_path)
 
     threading.Thread(target=run, daemon=True).start()
-
     return {
-        "status":       "started",
-        "message":      f"Pipeline started — fetching up to {total_approx} headlines from 16 sources. Headlines from last 48 hours only.",
-        "started_at":   datetime.now().isoformat(),
+        "status": "started",
+        "message": f"Pipeline started — fetching up to {total_approx} headlines from 16 sources.",
+        "started_at": datetime.now(IST).isoformat(),
         "max_per_feed": max_per_feed,
         "approx_total": total_approx,
     }
-    from collections import defaultdict
-from datetime import timedelta
 
-brief_usage: dict = defaultdict(list)
-BRIEF_MAX = 2
-
+# ── BRIEF ──────────────────────────────────────────────────────────
 @app.get("/api/brief/status")
 def brief_status(request: Request):
-    ip     = request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or (request.client.host if request.client else "unknown")
-    now    = datetime.now()
+    ip = get_client_ip(request)
+    now = datetime.now()
     cutoff = now.replace(hour=0, minute=0, second=0, microsecond=0)
     brief_usage[ip] = [t for t in brief_usage[ip] if t >= cutoff]
-    used      = len(brief_usage[ip])
+    used = len(brief_usage[ip])
     remaining = max(0, BRIEF_MAX - used)
     return {"allowed": remaining > 0, "used": used, "remaining": remaining, "limit": BRIEF_MAX}
 
-
 class BriefRequest(BaseModel):
-    top_headlines:  list
-    sector_summary: list
-    regime:         dict
-
+    top_headlines: list = Field(default_factory=list, max_length=10)
+    sector_summary: list = Field(default_factory=list, max_length=15)
+    regime: dict
 
 @app.post("/api/brief")
 def generate_brief(request: Request, req: BriefRequest):
-    ip     = request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or (request.client.host if request.client else "unknown")
-    now    = datetime.now()
+    ip = get_client_ip(request)
+    now = datetime.now()
     cutoff = now.replace(hour=0, minute=0, second=0, microsecond=0)
     brief_usage[ip] = [t for t in brief_usage[ip] if t >= cutoff]
-    used      = len(brief_usage[ip])
-    remaining = max(0, BRIEF_MAX - used)
+    if len(brief_usage[ip]) >= BRIEF_MAX:
+        raise HTTPException(status_code=429, detail={"error": "daily_limit_reached", "message": "Both daily brief generations used. Resets at midnight.", "used": len(brief_usage[ip]), "limit": BRIEF_MAX, "remaining": 0})
 
-    if remaining <= 0:
-        raise HTTPException(status_code=429, detail={
-            "error": "daily_limit_reached",
-            "message": "Both daily brief generations used. Resets at midnight.",
-            "used": used, "limit": BRIEF_MAX, "remaining": 0,
-        })
-
-    brief_usage[ip].append(datetime.now())
-    used_now      = len(brief_usage[ip])
+    brief_usage[ip].append(now)
+    used_now = len(brief_usage[ip])
     remaining_now = max(0, BRIEF_MAX - used_now)
 
     hl_lines = []
     for h in req.top_headlines[:8]:
         shock = h.get("shock_status", "Normal")
-        tag   = " MAJOR SHOCK" if shock == "Major Shock" else " SHOCK" if shock == "Shock" else ""
-        hl_lines.append(
-            f"• [{h.get('sector','')}] {h.get('title','')} "
-            f"(Impact: {h.get('impact_score','')}/10, {str(h.get('sentiment','')).upper()}{tag})"
-        )
+        tag = " MAJOR SHOCK" if shock == "Major Shock" else " SHOCK" if shock == "Shock" else ""
+        hl_lines.append(f"• [{h.get('sector','')}] {h.get('title','')} (Impact: {h.get('impact_score','')}/10, {str(h.get('sentiment','')).upper()}{tag})")
 
     sec_lines = []
     for s in sorted(req.sector_summary, key=lambda x: x.get("avg_weighted_risk", 0), reverse=True):
-        sec_lines.append(
-            f"• {s.get('sector',''):12} | Risk {s.get('avg_weighted_risk', 0):5.1f} "
-            f"| CSI {s.get('composite_sentiment_index', 0):+6.1f} "
-            f"| {s.get('risk_level','')}"
+        sec_lines.append(f"• {s.get('sector',''):12} | Risk {s.get('avg_weighted_risk', 0):5.1f} | CSI {s.get('composite_sentiment_index', 0):+6.1f} | {s.get('risk_level','')}")
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are a senior market strategist writing a forward-looking market outlook for Indian intraday traders. Frame everything as EXPECTED conditions. Use markdown bold for key numbers. No disclaimers. No fluff. Every sentence must contain a specific number, sector name, or directional call."},
+                {"role": "user", "content": f"Write a forward-looking market outlook:\n\n## Expected Regime: {req.regime.get('regime', '')}\n## Nifty Expected Move\n## Highest Probability Risk Today\n## Sector Outlook\n## Key Events to Watch\n## Trading Implication\n\n---\nRegime: {req.regime.get('regime', '')} — {req.regime.get('description', '')}\nNifty: {req.regime.get('nifty_implication', '')}\n\nSECTOR DATA:\n{''.join(sec_lines)}\n\nTOP HEADLINES:\n{''.join(hl_lines)}"}
+            ],
+            temperature=0.25, max_tokens=650,
         )
+        return {"brief": response.choices[0].message.content, "used": used_now, "remaining": remaining_now, "limit": BRIEF_MAX}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"AI service temporarily unavailable: {str(e)[:100]}")
 
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You are a senior market strategist writing a forward-looking market outlook "
-                    "for Indian intraday traders. Frame everything as EXPECTED conditions. "
-                    "Use language like 'expected to', 'likely to', 'anticipated'. "
-                    "Use markdown bold for key numbers and sector names. No disclaimers. No fluff. "
-                    "Every sentence must contain a specific number, sector name, or directional call."
-                ),
-            },
-            {
-                "role": "user",
-                "content": f"""Write a forward-looking market outlook with this structure:
-
-## Expected Regime: {req.regime.get('regime', '')}
-(What this means for today's price action)
-
-## Nifty Expected Move
-(Specific direction)
-
-## Highest Probability Risk Today
-(Single event most likely to move markets)
-
-## Sector Outlook
-**Expected Underperformer:** (sector and why)
-**Expected Outperformer:** (sector and why)
-
-## Key Events to Watch
-(3 bullet points)
-
-## Trading Implication
-(One specific forward-looking call)
-
----
-Regime: {req.regime.get('regime', '')} — {req.regime.get('description', '')}
-Nifty: {req.regime.get('nifty_implication', '')}
-
-SECTOR DATA:
-{''.join(sec_lines)}
-
-TOP HEADLINES:
-{''.join(hl_lines)}""",
-            }
-        ],
-        temperature=0.25,
-        max_tokens=650,
-    )
-
+# ── NEW: ACCURACY & HISTORY ENDPOINTS ──────────────────────────────
+@app.get("/api/accuracy")
+def get_accuracy():
+    stats_7 = db.get_accuracy_stats(7)
+    stats_30 = db.get_accuracy_stats(30)
+    stats_90 = db.get_accuracy_stats(90)
+    sources = db.get_source_reliability()
+    weights = db.get_dynamic_weights("sector")
     return {
-        "brief":     response.choices[0].message.content,
-        "used":      used_now,
-        "remaining": remaining_now,
-        "limit":     BRIEF_MAX,
+        "accuracy_7d": stats_7,
+        "accuracy_30d": stats_30,
+        "accuracy_90d": stats_90,
+        "source_reliability": sources,
+        "dynamic_weights": weights,
     }
+
+@app.get("/api/history")
+def get_history(sector: str = None, days: int = 30):
+    days = min(days, 90)
+    history = db.get_sector_history(sector, days)
+    return {"history": history, "days": days, "sector": sector}
+
+@app.get("/api/stocks/search")
+def search_stocks(q: str = ""):
+    if len(q) < 2:
+        raise HTTPException(status_code=400, detail="Search query must be at least 2 characters.")
+    results = db.search_stock(q)
+    # Aggregate stats
+    if results:
+        sentiments = [r.get("sentiment", "neutral") for r in results]
+        avg_impact = round(np.mean([float(r.get("impact_score", 5)) for r in results]), 1)
+        pos = sentiments.count("positive")
+        neg = sentiments.count("negative")
+        return {
+            "query": q, "total": len(results), "headlines": results,
+            "aggregate": {"avg_impact": avg_impact, "positive": pos, "negative": neg, "neutral": len(results) - pos - neg,
+                          "net_sentiment": "bullish" if pos > neg else "bearish" if neg > pos else "neutral"}
+        }
+    return {"query": q, "total": 0, "headlines": [], "aggregate": None}
+
+# ── ADMIN AUTH ─────────────────────────────────────────────────────
+class LoginRequest(BaseModel):
+    password: str = Field(..., max_length=200)
+
+@app.post("/api/admin/login")
+def admin_login(req: LoginRequest):
+    if req.password != ADMIN_SECRET:
+        raise HTTPException(status_code=401, detail="Invalid credentials.")
+    token = hashlib.sha256(ADMIN_SECRET.encode()).hexdigest()
+    return {"token": token, "message": "Authenticated."}
+
+@app.get("/api/admin/logs")
+def view_logs(request: Request):
+    verify_admin(request)
+    if not os.path.exists(LOG_FILE):
+        return {"logs": "No logs yet."}
+    with open(LOG_FILE, "r") as f:
+        return {"logs": f.read()[-5000:]}
+
+@app.post("/api/admin/backtest")
+def trigger_backtest(request: Request):
+    verify_admin(request)
+    def run():
+        try:
+            from backtester import run_backtest
+            run_backtest()
+        except Exception as e:
+            print(f"Backtest error: {e}")
+    threading.Thread(target=run, daemon=True).start()
+    return {"status": "started", "message": "Backtest initiated."}
+
+# ── REMOVED: /api/pipeline/force-run (security vulnerability) ─────
+# ── REMOVED: /api/logs/marketpulse-secret-view (security vulnerability) ──
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=False)
-    
