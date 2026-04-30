@@ -7,12 +7,26 @@ The agent THINKS about what it needs, calls tools, and reasons holistically.
 import json, os, traceback
 import urllib.request
 from datetime import datetime, timezone, timedelta
+from typing import Any
+
+import pandas as pd
 from openai import OpenAI
 from dotenv import load_dotenv
 
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 IST = timezone(timedelta(hours=5, minutes=30))
+DATA_DIR = os.path.dirname(os.path.abspath(__file__))
+LOG_FILE = os.path.join(DATA_DIR, "pipeline_live.log")
+
+
+def _log(line: str):
+    """Append a single line to the live pipeline log (powers SSE stream)."""
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8", errors="ignore") as f:
+            f.write(line.rstrip("\n") + "\n")
+    except Exception:
+        pass
 
 # ── TOOL DEFINITIONS (what the agent CAN do) ──────────────────────
 
@@ -31,6 +45,14 @@ TOOLS = [
                 "required": ["symbol", "reason"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_macro_snapshot",
+            "description": "Fetch macro indicators that drive Indian intraday risk (Brent crude, INR/USD, India VIX, Gold, US 10Y) and return risk flags + override regime if extreme.",
+            "parameters": {"type": "object", "properties": {}},
+        },
     },
     {
         "type": "function",
@@ -197,6 +219,11 @@ def _exec_fetch_rss(sources, max_per_source=10):
     
     return json.dumps({"count": len([r for r in results if "title" in r]), "headlines": results[:100]})
 
+def _exec_fetch_macro_snapshot():
+    from macro_fetcher import fetch_all_macro_data
+    macro = fetch_all_macro_data()
+    return json.dumps(macro, default=str)
+
 
 def _exec_get_predictions(days=7):
     """Get past predictions from database."""
@@ -265,6 +292,8 @@ def execute_tool(name, args):
     """Execute a tool by name with given arguments."""
     if name == "fetch_market_price":
         return _exec_fetch_market_price(args.get("symbol"), args.get("reason", ""))
+    elif name == "fetch_macro_snapshot":
+        return _exec_fetch_macro_snapshot()
     elif name == "fetch_rss_headlines":
         return _exec_fetch_rss(args.get("sources", ["ALL"]), args.get("max_per_source", 10))
     elif name == "get_previous_predictions":
@@ -327,9 +356,9 @@ def run_agent(max_iterations=8):
     The agent decides what tools to call and reasons about the results.
     """
     now = datetime.now(IST)
-    print(f"\n{'='*60}")
-    print(f"MARKETPULSE AGENT — {now.strftime('%Y-%m-%d %H:%M IST')}")
-    print(f"{'='*60}")
+    _log(f"{'='*60}")
+    _log(f"MARKETPULSE AGENT — {now.strftime('%Y-%m-%d %H:%M IST')}")
+    _log(f"{'='*60}")
     
     messages = [
         {"role": "system", "content": AGENT_SYSTEM_PROMPT},
@@ -341,7 +370,7 @@ def run_agent(max_iterations=8):
     
     while iteration < max_iterations:
         iteration += 1
-        print(f"\n  ── Agent iteration {iteration}/{max_iterations} ──")
+        _log(f"\n  ── Agent iteration {iteration}/{max_iterations} ──")
         
         try:
             response = client.chat.completions.create(
@@ -353,7 +382,7 @@ def run_agent(max_iterations=8):
                 max_tokens=4000,
             )
         except Exception as e:
-            print(f"  [!] Agent API error: {e}")
+            _log(f"  [!] Agent API error: {e}")
             break
         
         msg = response.choices[0].message
@@ -364,7 +393,7 @@ def run_agent(max_iterations=8):
             for tc in msg.tool_calls:
                 fn_name = tc.function.name
                 fn_args = json.loads(tc.function.arguments)
-                print(f"    🔧 {fn_name}({json.dumps(fn_args)[:120]}...)")
+                _log(f"    🔧 {fn_name}({json.dumps(fn_args)[:200]})")
                 
                 result = execute_tool(fn_name, fn_args)
                 all_tool_results[f"{fn_name}_{iteration}"] = result
@@ -377,7 +406,7 @@ def run_agent(max_iterations=8):
         else:
             # Agent is done — it produced its final analysis
             final_content = msg.content
-            print(f"\n  ✅ Agent completed in {iteration} iterations")
+            _log(f"\n  ✅ Agent completed in {iteration} iterations")
             
             # Try to parse as JSON
             try:
@@ -389,6 +418,7 @@ def run_agent(max_iterations=8):
                     result["iterations"] = iteration
                     result["timestamp"] = now.isoformat()
                     result["tool_calls"] = list(all_tool_results.keys())
+                    result["_tool_results"] = all_tool_results
                     return result
             except json.JSONDecodeError:
                 pass
@@ -401,10 +431,11 @@ def run_agent(max_iterations=8):
                 "agent_reasoning": final_content,
                 "iterations": iteration,
                 "timestamp": now.isoformat(),
+                "_tool_results": all_tool_results,
                 "raw_response": True
             }
     
-    print(f"  [!] Agent hit max iterations ({max_iterations})")
+    _log(f"  [!] Agent hit max iterations ({max_iterations})")
     return {"error": "Max iterations reached", "iterations": max_iterations}
 
 
@@ -420,34 +451,113 @@ def run_agent_pipeline():
     )
     
     run_id = create_pipeline_run()
-    print(f"  Pipeline run #{run_id}")
+    _log(f"  Pipeline run #{run_id}")
     
     result = run_agent(max_iterations=10)
     
     if "error" in result and not result.get("regime"):
-        print(f"  [!] Agent failed: {result.get('error')}")
+        _log(f"  [!] Agent failed: {result.get('error')}")
         return result
-    
-    # Save to database
-    regime = result.get("regime", "Risk Off")
-    avg_nss = 0
-    avg_risk = 0
-    
-    # Map regime to approximate NSS/risk for backward compatibility
-    if regime == "Risk On":
-        avg_nss, avg_risk = 25, 15
-    elif regime == "Panic":
-        avg_nss, avg_risk = -30, 50
-    elif regime == "Complacent":
-        avg_nss, avg_risk = 10, 30
-    else:
-        avg_nss, avg_risk = -10, 25
-    
+
+    # ── Build dashboard dataset from tool outputs ───────────────────
+    tool_results = result.get("_tool_results", {}) or {}
+
+    macro: dict[str, Any] = {}
+    rss_headlines: list[dict[str, Any]] = []
+    analyzed: list[dict[str, Any]] = []
+
+    for key, raw in tool_results.items():
+        if key.startswith("fetch_macro_snapshot_"):
+            try:
+                macro = json.loads(raw)
+            except Exception:
+                macro = {}
+        if key.startswith("fetch_rss_headlines_"):
+            try:
+                payload = json.loads(raw)
+                rss_headlines = [h for h in payload.get("headlines", []) if isinstance(h, dict) and h.get("title")]
+            except Exception:
+                rss_headlines = []
+        if key.startswith("analyze_headlines_batch_"):
+            try:
+                payload = json.loads(raw)
+                analyzed = payload.get("analyzed", []) if isinstance(payload, dict) else []
+            except Exception:
+                analyzed = []
+
+    # If agent didn't call the tools in the expected order, do the minimum required here.
+    if not macro:
+        from macro_fetcher import fetch_all_macro_data
+        macro = fetch_all_macro_data()
+    if not rss_headlines:
+        rss_payload = json.loads(_exec_fetch_rss(["ALL"], max_per_source=10))
+        rss_headlines = [h for h in rss_payload.get("headlines", []) if h.get("title")]
+    if not analyzed:
+        from macro_fetcher import format_macro_context_for_gpt
+        macro_context = format_macro_context_for_gpt(macro)
+        titles = [h.get("title", "") for h in rss_headlines[:80] if h.get("title")]
+        analyzed_payload = json.loads(_exec_analyze_batch(titles[:30], macro_context))
+        analyzed = analyzed_payload.get("analyzed", [])
+
+    # Merge analyzed results back onto raw RSS headlines by index
+    merged_rows: list[dict[str, Any]] = []
+    for i, h in enumerate(rss_headlines[: min(len(rss_headlines), len(analyzed))]):
+        a = analyzed[i] if i < len(analyzed) else {}
+        merged_rows.append({
+            "title": h.get("title", ""),
+            "description": "",
+            "source": h.get("source", ""),
+            "source_url": "",
+            "published": datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S IST"),
+            "hours_old": float(h.get("hours_old", 0) or 0),
+            "url": h.get("url", ""),
+            "is_govt_source": bool(str(h.get("source", "")).upper() in ("PIB", "RBI", "SEBI")),
+            # analyzed fields (dashboard schema expects these)
+            "sector": a.get("sector", "Other"),
+            "sentiment": a.get("sentiment", "neutral"),
+            "sentiment_confidence": float(a.get("sentiment_confidence", 0.7) or 0.7),
+            "impact_score": float(a.get("impact_score", 5) or 5),
+            "valence": float(a.get("valence", 0.5) or 0.5),
+            "arousal": float(a.get("arousal", 0.5) or 0.5),
+            "geopolitical_risk": bool(a.get("geopolitical_risk", False)),
+            "affected_companies": a.get("affected_companies", []),
+            "second_order_beneficiaries": a.get("second_order_beneficiaries", []),
+            "catalyst_type": a.get("catalyst_type", "other"),
+            "price_direction": a.get("price_direction", "neutral"),
+            "time_horizon": a.get("time_horizon", "intraday"),
+            "conviction": a.get("conviction", "low"),
+            "macro_sensitivity": a.get("macro_sensitivity", "medium"),
+            "one_line_insight": a.get("one_line_insight", ""),
+            "signal_reason": a.get("signal_reason", ""),
+            "contrarian_flag": bool(a.get("contrarian_flag", False)),
+            "contrarian_reason": a.get("contrarian_reason", ""),
+            "source_reliability": 1.0,
+        })
+
+    headlines_df = pd.DataFrame(merged_rows)
+
+    # Use the same metric engine as the original pipeline so the UI stays consistent
+    from pipeline import calculate_metrics, calculate_market_stress_index, save_all
+    scored_headlines_df, sector_df = calculate_metrics(headlines_df) if not headlines_df.empty else (headlines_df, pd.DataFrame())
+    msi = calculate_market_stress_index(scored_headlines_df, sector_df) if not scored_headlines_df.empty else {"msi": 0, "level": "Low"}
+
+    save_all(scored_headlines_df, sector_df, msi, run_id)
+
+    avg_nss = float(sector_df["composite_sentiment_index"].mean()) if not sector_df.empty else 0.0
+    avg_risk = float(sector_df["avg_weighted_risk"].mean()) if not sector_df.empty else 0.0
+
+    # Macro override (if extreme) should override regime label
+    macro_override = macro.get("macro_regime_override")
+    regime = macro_override or result.get("regime") or "Risk Off"
+
     complete_pipeline_run(
-        run_id, result.get("headlines_analyzed", 0),
-        avg_nss, avg_risk, regime,
-        result.get("macro_risk_score", 0), 
-        "High" if result.get("regime_confidence", 50) < 40 else "Medium"
+        run_id,
+        int(len(scored_headlines_df)),
+        float(avg_nss),
+        float(avg_risk),
+        str(regime),
+        float(macro.get("macro_risk_score", 0) or 0),
+        str(msi.get("level", "Low")),
     )
     
     # Save prediction
@@ -460,8 +570,8 @@ def run_agent_pipeline():
     with open(result_path, "w") as f:
         json.dump(result, f, indent=2, default=str)
     
-    print(f"\n  ✅ Agent pipeline complete. Regime: {regime} (confidence: {result.get('regime_confidence', '?')}%)")
-    print(f"  Reasoning: {result.get('agent_reasoning', '')[:200]}...")
+    _log(f"\n  ✅ Agent pipeline complete. Regime: {regime} (confidence: {result.get('regime_confidence', '?')}%)")
+    _log(f"  Headlines saved: {len(scored_headlines_df)} | sectors saved: {len(sector_df)} | MSI: {msi.get('msi')} ({msi.get('level')})")
     
     return result
 

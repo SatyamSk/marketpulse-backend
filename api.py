@@ -284,7 +284,7 @@ def pipeline_status():
 class PipelineRequest(BaseModel):
     secret: str
     max_per_feed: int = 12
-    mode: str = "agent"  # "agent" (autonomous) or "legacy" (old pipeline)
+    # Legacy/static mode intentionally removed. Everything runs through agent.
 
 @app.post("/api/pipeline/run")
 def trigger_pipeline(req: PipelineRequest, request: Request):
@@ -294,7 +294,7 @@ def trigger_pipeline(req: PipelineRequest, request: Request):
 
     max_per_feed = max(3, min(50, req.max_per_feed))
     total_approx = max_per_feed * 16
-    use_agent = req.mode == "agent"
+    use_agent = True
 
     def run():
         lock_path = os.path.join(DATA_DIR, "pipeline.lock")
@@ -332,10 +332,10 @@ def trigger_pipeline(req: PipelineRequest, request: Request):
                 os.remove(lock_path)
 
     threading.Thread(target=run, daemon=True).start()
-    msg = "Agent intelligence gathering started" if use_agent else f"Legacy pipeline started — ~{total_approx} headlines"
+    msg = "Agent intelligence gathering started"
     return {
         "status": "started",
-        "mode": "agent" if use_agent else "legacy",
+        "mode": "agent",
         "message": msg,
         "started_at": datetime.now(IST).isoformat(),
     }
