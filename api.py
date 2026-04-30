@@ -195,32 +195,32 @@ def get_dashboard():
             sectors_raw = gh_sectors
             pipeline_info = pipeline_info or {"completed_at": gh_last_run, "msi": (gh_msi or {}).get("msi", 0), "msi_level": (gh_msi or {}).get("level", "Low")}
         else:
-        empty_regime = {
-            "regime": "Risk Off",
-            "description": "No pipeline run detected yet. Run the pipeline (Admin → Run Agent Intelligence) to generate today's analysis.",
-            "nifty_implication": "No call available until the first run completes.",
-            "watch": "—",
-            "avoid": "—",
-        }
-        return {
-            "last_updated": None,
-            "market_regime": empty_regime,
-            "benchmark": [],
-            "headlines": [],
-            "pareto": [],
-            "contagion_flows": [],
-            "velocity_trend": [],
-            "shock_headlines": [],
-            "shock_counts": {"major": 0, "shock": 0, "watch": 0},
-            "market_stress_index": {"msi": 0, "level": "Low"},
-            "model_accuracy": {"accuracy": 0, "total_predictions": 0, "correct": 0},
-            "summary_stats": {
-                "total_headlines": 0,
-                "geopolitical_flags": 0,
-                "avg_nss": 0,
-                "avg_risk": 0,
-            },
-        }
+            empty_regime = {
+                "regime": "Risk Off",
+                "description": "No pipeline run detected yet. Run the pipeline (Admin → Run Agent Intelligence) to generate today's analysis.",
+                "nifty_implication": "No call available until the first run completes.",
+                "watch": "—",
+                "avoid": "—",
+            }
+            return {
+                "last_updated": None,
+                "market_regime": empty_regime,
+                "benchmark": [],
+                "headlines": [],
+                "pareto": [],
+                "contagion_flows": [],
+                "velocity_trend": [],
+                "shock_headlines": [],
+                "shock_counts": {"major": 0, "shock": 0, "watch": 0},
+                "market_stress_index": {"msi": 0, "level": "Low"},
+                "model_accuracy": {"accuracy": 0, "total_predictions": 0, "correct": 0},
+                "summary_stats": {
+                    "total_headlines": 0,
+                    "geopolitical_flags": 0,
+                    "avg_nss": 0,
+                    "avg_risk": 0,
+                },
+            }
 
     headlines_df = pd.DataFrame(headlines_raw)
     benchmark_df = pd.DataFrame(sectors_raw)
