@@ -387,7 +387,7 @@ def trigger_pipeline(req: PipelineRequest, request: Request):
 
             if use_agent:
                 # Run autonomous agent
-                from agent import run_agent_pipeline
+                from autonomous_agent import run_agent_pipeline
                 result = run_agent_pipeline(max_per_source=max_per_feed)
                 with open(LOG_FILE, "a") as f:
                     f.write(f"\nAgent result: {json.dumps(result, default=str)[:2000]}\n")
@@ -589,6 +589,20 @@ def trigger_backtest(request: Request):
             print(f"Backtest error: {e}")
     threading.Thread(target=run, daemon=True).start()
     return {"status": "started", "message": "Backtest initiated."}
+
+
+@app.post("/api/admin/reflect")
+def trigger_reflection(request: Request):
+    """Post-market learning reflection (safe admin-only trigger)."""
+    verify_admin(request)
+    def run():
+        try:
+            from learning_engine import run_learning_reflection
+            run_learning_reflection()
+        except Exception as e:
+            print(f"Reflection error: {e}")
+    threading.Thread(target=run, daemon=True).start()
+    return {"status": "started", "message": "Learning reflection started."}
 
 # ── REMOVED: /api/pipeline/force-run (security vulnerability) ─────
 # ── REMOVED: /api/logs/marketpulse-secret-view (security vulnerability) ──

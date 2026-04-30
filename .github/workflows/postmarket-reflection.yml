@@ -1,0 +1,28 @@
+name: Post-market learning reflection (optional)
+
+on:
+  schedule:
+    # 10:30 UTC ≈ 16:00 IST (after market close). Adjust as needed.
+    - cron: "30 10 * * 1-5"
+  workflow_dispatch: {}
+
+jobs:
+  reflect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger reflection endpoint
+        run: |
+          if [ -z "${{ secrets.RENDER_REFLECT_URL }}" ]; then
+            echo "Missing secret RENDER_REFLECT_URL (e.g. https://<render>.onrender.com/api/admin/reflect)"
+            exit 1
+          fi
+          if [ -z "${{ secrets.ADMIN_TOKEN }}" ]; then
+            echo "Missing secret ADMIN_TOKEN (sha256 of ADMIN_SECRET)"
+            exit 1
+          fi
+          curl -fsS -X POST "${{ secrets.RENDER_REFLECT_URL }}" \
+            -H "Authorization: Bearer ${{ secrets.ADMIN_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d "{}" | head -c 800
+
