@@ -509,22 +509,31 @@ def run_agent_pipeline(max_per_source: int = 14):
     if not rss_headlines:
         rss_payload = json.loads(_exec_fetch_rss(["ALL"], max_per_source=int(max_per_source)))
         rss_headlines = [h for h in rss_payload.get("headlines", []) if h.get("title")]
-    if not analyzed:
-        from macro_fetcher import format_macro_context_for_gpt
-        macro_context = format_macro_context_for_gpt(macro)
-        titles = [h.get("title", "") for h in rss_headlines if h.get("title")]
 
-        _log(f"  RSS fetched: {len(titles)} headlines across {len(RSS_MAP)} sources (max_per_source={max_per_source})")
-        analyzed_all: list[dict[str, Any]] = []
-        for i in range(0, len(titles), 30):
-            batch = titles[i:i+30]
-            _log(f"  Analyzing headlines batch {i//30+1}: {len(batch)} items")
-            analyzed_payload = json.loads(_exec_analyze_batch(batch, macro_context))
-            batch_analyzed = analyzed_payload.get("analyzed", []) if isinstance(analyzed_payload, dict) else []
-            if not isinstance(batch_analyzed, list):
-                batch_analyzed = []
-            analyzed_all.extend(batch_analyzed)
-        analyzed = analyzed_all
+    # ALWAYS enforce full-coverage headline analysis.
+    # The "brain" agent might call analyze_headlines_batch partially (e.g., 10 items),
+    # but the dashboard needs consistent coverage across all fetched RSS titles.
+    from macro_fetcher import format_macro_context_for_gpt
+    macro_context = format_macro_context_for_gpt(macro)
+    titles = [h.get("title", "") for h in rss_headlines if h.get("title")]
+    _log(f"  RSS fetched: {len(titles)} headlines across {len(RSS_MAP)} sources (max_per_source={max_per_source})")
+
+    analyzed_all: list[dict[str, Any]] = []
+    for i in range(0, len(titles), 30):
+        batch = titles[i:i+30]
+        _log(f"  Analyzing headlines batch {i//30+1}: {len(batch)} items")
+        analyzed_payload = json.loads(_exec_analyze_batch(batch, macro_context))
+        batch_analyzed = analyzed_payload.get("analyzed", []) if isinstance(analyzed_payload, dict) else []
+        if not isinstance(batch_analyzed, list):
+            batch_analyzed = []
+
+        # If model returns fewer items than requested, pad with empty dicts to preserve alignment.
+        if len(batch_analyzed) < len(batch):
+            batch_analyzed.extend([{}] * (len(batch) - len(batch_analyzed)))
+
+        analyzed_all.extend(batch_analyzed[: len(batch)])
+
+    analyzed = analyzed_all[: len(titles)]
 
     # Merge analyzed results back onto raw RSS headlines by index
     merged_rows: list[dict[str, Any]] = []
