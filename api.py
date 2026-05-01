@@ -78,10 +78,15 @@ def _keep_alive_worker():
     """Self-ping every 13 minutes to prevent Render spin-down."""
     import time as _time
     render_url = os.getenv("RENDER_EXTERNAL_URL", "")
+    # Fallback: try to construct from service name
     if not render_url:
-        print("  [i] RENDER_EXTERNAL_URL not set — keep-alive disabled.")
-        return
-    health_url = f"{render_url}/api/health"
+        svc = os.getenv("RENDER_SERVICE_NAME", "")
+        if svc:
+            render_url = f"https://{svc}.onrender.com"
+    if not render_url:
+        print("  [i] RENDER_EXTERNAL_URL not set — keep-alive will use localhost.")
+        render_url = "http://localhost:8000"
+    health_url = f"{render_url.rstrip('/')}/ping"
     print(f"  ✓ Keep-alive active: pinging {health_url} every 13 min")
     while True:
         _time.sleep(780)  # 13 minutes
@@ -94,6 +99,11 @@ def _keep_alive_worker():
 def startup_event():
     """Start keep-alive thread on server boot."""
     threading.Thread(target=_keep_alive_worker, daemon=True).start()
+    # Ensure memory tables exist
+    try:
+        from memory_system import memory  # noqa: F401 — triggers table creation
+    except Exception:
+        pass
 
 # ── SECURITY: Restricted CORS ─────────────────────────────────────
 ALLOWED_ORIGINS = [
@@ -157,6 +167,11 @@ def classify_regime(avg_nss: float, avg_risk: float) -> dict:
         return {"regime": "Risk Off", "description": "Cautious market conditions. Capital preservation favored.", "nifty_implication": "Flat to gap-down open likely. Avoid chasing early moves.", "watch": "Sectors with positive velocity — early recovery signs.", "avoid": "High-leverage positions and sectors with negative velocity."}
 
 # ── HEALTH CHECK ───────────────────────────────────────────────────
+@app.get("/ping")
+def ping():
+    """Minimal keep-alive endpoint for UptimeRobot / cron pings."""
+    return {"pong": True}
+
 @app.get("/api/health")
 def health_check():
     pipeline_info = db.get_latest_pipeline_info()
@@ -363,7 +378,7 @@ def pipeline_status():
 class PipelineRequest(BaseModel):
     secret: str
     max_per_feed: int = 12
-    # Legacy/static mode intentionally removed. Everything runs through agent.
+    model: str = "gpt-4o-mini"  # Model selection: gpt-4o-mini, gpt-4o, gpt-4.1-mini, gpt-4.1-nano
 
 @app.post("/api/pipeline/run")
 def trigger_pipeline(req: PipelineRequest, request: Request):
@@ -373,7 +388,7 @@ def trigger_pipeline(req: PipelineRequest, request: Request):
 
     max_per_feed = max(3, min(50, req.max_per_feed))
     total_approx = max_per_feed * 16
-    use_agent = True
+    selected_model = req.model or "gpt-4o-mini"
 
     def run():
         lock_path = os.path.join(DATA_DIR, "pipeline.lock")
@@ -381,28 +396,19 @@ def trigger_pipeline(req: PipelineRequest, request: Request):
             f.write(datetime.now().isoformat())
         try:
             with open(LOG_FILE, "w") as log_f:
-                mode_label = "AGENT" if use_agent else "LEGACY"
-                log_f.write(f"🚀 {mode_label} pipeline at {datetime.now(IST).strftime('%H:%M:%S IST')}\n{'='*50}\n")
+                log_f.write(f"🚀 AGENT pipeline at {datetime.now(IST).strftime('%H:%M:%S IST')}\n")
+                log_f.write(f"Model: {selected_model} | Max/source: {max_per_feed}\n{'='*50}\n")
                 log_f.flush()
 
-            if use_agent:
-                # Run autonomous agent
-                from autonomous_agent import run_agent_pipeline
-                result = run_agent_pipeline(max_per_source=max_per_feed)
-                with open(LOG_FILE, "a") as f:
-                    f.write(f"\nAgent result: {json.dumps(result, default=str)[:2000]}\n")
-                    f.write(f"\n{'='*50}\n✅ Agent pipeline complete.\n")
-            else:
-                # Legacy pipeline
-                env = os.environ.copy()
-                env["PYTHONUNBUFFERED"] = "1"
-                with open(LOG_FILE, "a") as log_f:
-                    subprocess.run(
-                        [sys.executable, os.path.join(DATA_DIR, "pipeline.py"), f"--max-per-feed={max_per_feed}"],
-                        cwd=DATA_DIR, env=env, stdout=log_f, stderr=subprocess.STDOUT,
-                    )
-                with open(LOG_FILE, "a") as f:
-                    f.write(f"\n{'='*50}\n✅ Legacy pipeline complete.\n")
+            # Set model in environment for agent to pick up
+            os.environ["OPENAI_MODEL_AGENT"] = selected_model
+
+            # Run autonomous agent
+            from autonomous_agent import run_agent_pipeline
+            result = run_agent_pipeline(max_per_source=max_per_feed)
+            with open(LOG_FILE, "a") as f:
+                f.write(f"\nAgent result: {json.dumps(result, default=str)[:2000]}\n")
+                f.write(f"\n{'='*50}\n✅ Agent pipeline complete.\n")
         except Exception as e:
             with open(LOG_FILE, "a") as f:
                 f.write(f"\n🔥 ERROR: {e}\n{traceback.format_exc()}")
@@ -411,10 +417,11 @@ def trigger_pipeline(req: PipelineRequest, request: Request):
                 os.remove(lock_path)
 
     threading.Thread(target=run, daemon=True).start()
-    msg = "Agent intelligence gathering started"
+    msg = f"Agent intelligence started (model: {selected_model})"
     return {
         "status": "started",
         "mode": "agent",
+        "model": selected_model,
         "message": msg,
         "started_at": datetime.now(IST).isoformat(),
     }
@@ -529,6 +536,30 @@ def search_stocks(q: str = ""):
                           "net_sentiment": "bullish" if pos > neg else "bearish" if neg > pos else "neutral"}
         }
     return {"query": q, "total": 0, "headlines": [], "aggregate": None}
+
+# ── SECTOR DETAIL ──────────────────────────────────────────────────
+@app.get("/api/sectors/{sector_name}")
+def get_sector_detail(sector_name: str):
+    """Return detailed metrics for a single sector (used by SentimentLab)."""
+    sectors_raw = db.get_latest_sectors()
+    if not sectors_raw:
+        raise HTTPException(status_code=404, detail="No sector data available.")
+    match = next((s for s in sectors_raw if s.get("sector", "").lower() == sector_name.lower()), None)
+    if not match:
+        raise HTTPException(status_code=404, detail=f"Sector '{sector_name}' not found.")
+    return {"sector": sector_name, "metrics": {k: safe(v) for k, v in match.items()}}
+
+@app.get("/api/models")
+def list_models():
+    """Return available models for the agent pipeline."""
+    return {
+        "models": [
+            {"id": "gpt-4o-mini", "name": "GPT-4o Mini", "description": "Fast & cost-effective", "default": True},
+            {"id": "gpt-4o", "name": "GPT-4o", "description": "Most capable, higher cost", "default": False},
+            {"id": "gpt-4.1-mini", "name": "GPT-4.1 Mini", "description": "Latest mini model", "default": False},
+            {"id": "gpt-4.1-nano", "name": "GPT-4.1 Nano", "description": "Ultra-fast, lowest cost", "default": False},
+        ]
+    }
 
 # ── ADMIN AUTH ─────────────────────────────────────────────────────
 class LoginRequest(BaseModel):

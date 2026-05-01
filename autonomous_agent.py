@@ -47,14 +47,15 @@ def _anthropic_json(prompt: str) -> Dict[str, Any]:
     return json.loads(m.group()) if m else {"raw": text}
 
 
-def _openai_json(prompt: str) -> Dict[str, Any]:
+def _openai_json(prompt: str, model_override: str = None) -> Dict[str, Any]:
     from openai import OpenAI
 
+    model = model_override or os.getenv("OPENAI_MODEL_AGENT", os.getenv("OPENAI_MODEL_SYNTH", "gpt-4o-mini"))
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     r = client.chat.completions.create(
-        model=os.getenv("OPENAI_MODEL_SYNTH", "gpt-4o-mini"),
+        model=model,
         temperature=0.25,
-        max_tokens=1800,
+        max_tokens=2500,
         messages=[{"role": "user", "content": prompt}],
         response_format={"type": "json_object"},
     )
@@ -99,9 +100,34 @@ def synthesize_trader_view(
         for h in top_headlines[:25]
     ]
 
-    prompt = f"""You are a 20-year experienced Indian intraday trader and market strategist. Be ruthless, concrete, and causal.
+    prompt = f"""You are a 20-year experienced Indian intraday trader and market strategist.
+You are NOT a generic AI. You are an AUTONOMOUS AGENT. Be ruthless, concrete, and causal.
 
-MACRO SNAPSHOT (weight heavily):
+## INSTITUTIONAL OPERATING PROTOCOLS
+
+### TRAP_ALERT Detection
+- If headlines show >70% bullish sentiment with VIX rising or crude spiking, FLAG AS TRAP.
+- If 3+ sectors show sudden sentiment reversal from prior day, flag distribution risk.
+- If government source contradicts market sentiment, trust government source more.
+
+### Noise Filtration
+- Ignore headlines with impact_score < 4 for regime classification.
+- De-weight sectors with fewer than 3 headlines (insufficient sample).
+- Flag if >50% of headlines come from a single source (source concentration risk).
+
+### Autonomous Intelligence
+- If you notice patterns NOT captured in the data (e.g., implied correlations between sectors,
+  historical parallels, geopolitical spillover effects), INCLUDE THEM in your analysis.
+- If macro data suggests a regime different from headline sentiment, explain the conflict.
+- Identify SECOND-ORDER effects that the headline analysis may miss.
+- Cross-reference sector signals for consistency — if Banking is bullish but Fintech is bearish, explain why.
+
+### Confidence Scoring
+- Be explicit about your confidence level (0-100) and list what would INVALIDATE your thesis.
+- Higher confidence requires: macro alignment + headline consensus + historical pattern match.
+- Never assign >85 confidence unless macro AND sentiment are unambiguously aligned.
+
+MACRO SNAPSHOT (weight heavily — this is real money data):
 {macro_ctx}
 
 TOP SCORED SECTORS (risk/CSI/signal):
@@ -110,7 +136,7 @@ TOP SCORED SECTORS (risk/CSI/signal):
 TOP HEADLINES (already scored/classified):
 {json.dumps(hl_rows, indent=2, default=str)}
 
-RECENT FAILURES (learn from these):
+RECENT FAILURES (learn from these — do NOT repeat):
 {json.dumps(recent_failures[:7], indent=2, default=str)}
 
 PAST CORRELATIONS TO CONSIDER:
@@ -123,31 +149,34 @@ Output STRICT JSON:
   "nifty_direction": "bullish"|"bearish"|"neutral",
   "macro_summary": "...",
   "risk_flags": ["..."],
-  "top_insight": "...",
-  "invalidations": ["..."],
+  "trap_alerts": ["describe any detected traps"],
+  "top_insight": "one paragraph — the single most actionable insight",
+  "autonomous_observations": ["patterns you noticed that weren't in the data"],
+  "invalidations": ["what would make this analysis wrong"],
   "sector_signals": {{
     "Banking": "BUY BIAS"|"AVOID"|"CAUTION"|"IMPROVING"|"CONTRARIAN WATCH"|"NEUTRAL",
-    "IT": "...",
-    "Energy": "...",
-    "FMCG": "...",
-    "Healthcare": "...",
-    "Manufacturing": "...",
-    "Fintech": "...",
-    "Retail": "...",
-    "Startup": "...",
-    "Other": "..."
+    "IT": "...", "Energy": "...", "FMCG": "...", "Healthcare": "...",
+    "Manufacturing": "...", "Fintech": "...", "Retail": "...",
+    "Startup": "...", "Other": "..."
   }},
   "agent_reasoning_chain": ["step 1...", "step 2..."],
-  "learning_notes": "what you learned / adjusted today based on failures/correlations"
+  "learning_notes": "what you learned / adjusted today based on failures/correlations",
+  "noise_flags": ["any data quality concerns"]
 }}
 """
 
     if os.getenv("ANTHROPIC_API_KEY"):
-        return _anthropic_json(prompt)
+        try:
+            return _anthropic_json(prompt)
+        except Exception as e:
+            _log(f"  Anthropic failed ({e}), falling back to OpenAI")
     return _openai_json(prompt)
 
 
 def run_agent_pipeline(max_per_source: int = 14) -> Dict[str, Any]:
+    selected_model = os.getenv("OPENAI_MODEL_AGENT", "gpt-4o-mini")
+    _log(f"  Model: {selected_model}")
+
     # create pipeline run
     run_id = db.create_pipeline_run()
     _log(f"  Pipeline run #{run_id} (autonomous_agent)")
