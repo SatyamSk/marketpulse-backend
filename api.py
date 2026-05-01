@@ -467,18 +467,28 @@ def generate_brief(request: Request, req: BriefRequest):
     for s in sorted(req.sector_summary, key=lambda x: x.get("avg_weighted_risk", 0), reverse=True):
         sec_lines.append(f"• {s.get('sector',''):12} | Risk {s.get('avg_weighted_risk', 0):5.1f} | CSI {s.get('composite_sentiment_index', 0):+6.1f} | {s.get('risk_level','')}")
 
+    if not os.getenv("OPENAI_API_KEY"):
+        raise HTTPException(status_code=503, detail={
+            "error": "missing_api_key",
+            "message": "OPENAI_API_KEY is not configured on the backend. Please set it in your .env or hosting environment.",
+        })
+
     try:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "You are a senior market strategist writing a forward-looking market outlook for Indian intraday traders. Frame everything as EXPECTED conditions. Use markdown bold for key numbers. No disclaimers. No fluff. Every sentence must contain a specific number, sector name, or directional call."},
+                {"role": "system", "content": "You are an institutional-grade Intraday Sentiment Arbitrage Agent. Your primary objective is to execute asymmetrical signal extraction, identifying leading indicators and divergence traps before retail market realization. Cross-reference social velocity against verified Tier-1 financial nodes. Discard data if social velocity spikes >400% without corresponding Tier-1 catalyst. Execute forensic linguistic analysis. Detect sarcasm, inverse correlations, and synthetic FOMO. Tag as SYNTHETIC_MANIPULATION if identical phrasing appears across >50 distinct source nodes within a 5-minute window. Map quantified sentiment magnitude against order book depth and VWAP deviations. Trigger TRAP_ALERT if sentiment is overwhelmingly bullish (>0.85) but bid/ask spread widens and large block trades lean bearish. Calculate confidence based on historical accuracy of the specific data cluster and depreciate source weight by 0.5x for 24 hours if historical false-positive rate exceeds 15%. Frame everything as EXPECTED conditions. Use markdown bold for key numbers. No disclaimers. No fluff."},
                 {"role": "user", "content": f"Write a forward-looking market outlook:\n\n## Expected Regime: {req.regime.get('regime', '')}\n## Nifty Expected Move\n## Highest Probability Risk Today\n## Sector Outlook\n## Key Events to Watch\n## Trading Implication\n\n---\nRegime: {req.regime.get('regime', '')} — {req.regime.get('description', '')}\nNifty: {req.regime.get('nifty_implication', '')}\n\nSECTOR DATA:\n{''.join(sec_lines)}\n\nTOP HEADLINES:\n{''.join(hl_lines)}"}
             ],
             temperature=0.25, max_tokens=650,
         )
         return {"brief": response.choices[0].message.content, "used": used_now, "remaining": remaining_now, "limit": BRIEF_MAX}
     except Exception as e:
-        raise HTTPException(status_code=503, detail=f"AI service temporarily unavailable: {str(e)[:100]}")
+        detail = str(e)
+        raise HTTPException(status_code=503, detail={
+            "error": "ai_service_unavailable",
+            "message": f"AI service temporarily unavailable: {detail[:240]}",
+        })
 
 # ── NEW: ACCURACY & HISTORY ENDPOINTS ──────────────────────────────
 @app.get("/api/accuracy")
