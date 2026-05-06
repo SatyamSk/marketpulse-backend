@@ -12,9 +12,10 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import traceback
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
@@ -26,20 +27,81 @@ import database as db
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
+# ── Structured Event Emitter (Claude/Gemini-style thinking) ────────
 
-def _safe_run_agent(agent_module, context: Dict, agent_name: str) -> Dict[str, Any]:
-    """Run an agent with error handling."""
+AGENT_DESCRIPTIONS = {
+    "macro": ("Macro Intelligence", "Analyzes crude oil, VIX, INR, gold, and US10Y to classify the market regime"),
+    "headlines": ("Headline Collection", "Fetches and AI-classifies headlines from 16 news sources"),
+    "supply_chain": ("Supply Chain Graph", "Traces causal chains through 50+ entities in the knowledge graph"),
+    "behavioral": ("Behavioral Psychology", "Detects bull/bear traps, FOMO patterns, and crowd vs. smart money divergence"),
+    "flow": ("Institutional Flow", "Analyzes FII/DII flow patterns and institutional positioning"),
+    "historical_analog": ("Historical Analogy", "Pattern-matches current conditions against past market episodes"),
+    "temporal_delay": ("Temporal Delay", "Identifies effects that haven't hit markets yet — delayed propagation"),
+    "noise_filter": ("Noise Filter", "Separates signal from noise — removes low-quality or recycled headlines"),
+    "contradiction": ("Contradiction Detector", "Uses AI to find logical contradictions in the overall analysis"),
+    "self_eval": ("Self-Evaluation", "Calibrates confidence and checks for overfit or blind spots"),
+    "meta_supervisor": ("Meta-Supervisor", "Self-evolving intelligence — spawns new agents, runs anti-delusion checks"),
+    "synthesis": ("Synthesis", "Combines all 10 agents into a unified plain-English thesis"),
+}
+
+
+def _emit_event(event_type: str, agent_key: str, step: int = 0, total: int = 12,
+                message: str = "", confidence: Optional[float] = None,
+                duration_ms: Optional[int] = None, data: Optional[Dict] = None):
+    """
+    Emit a structured thinking event. The SSE stream picks these up.
+    Events are written to a shared file that the SSE endpoint reads.
+    """
+    name, desc = AGENT_DESCRIPTIONS.get(agent_key, (agent_key, ""))
+    event = {
+        "type": event_type,  # agent_start | agent_thinking | agent_done | agent_error | pipeline_done
+        "agent": agent_key,
+        "agent_name": name,
+        "agent_description": desc,
+        "step": step,
+        "total_steps": total,
+        "message": message,
+        "confidence": confidence,
+        "duration_ms": duration_ms,
+        "data": data or {},
+        "timestamp": datetime.now(IST).isoformat(),
+    }
+    # Write to the event log file (SSE endpoint reads this)
+    event_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "pipeline_events.jsonl")
+    try:
+        with open(event_path, "a") as f:
+            f.write(json.dumps(event, default=str) + "\n")
+    except Exception:
+        pass
+    # Also emit to the existing log for backward compat
+    prefix = f"[{step}/{total}]" if step > 0 else ""
+    _log(f"  {prefix} {name}: {message}")
+
+
+def _safe_run_agent(agent_module, context: Dict, agent_key: str,
+                    step: int = 0, total: int = 12) -> Dict[str, Any]:
+    """Run an agent with error handling and structured event emission."""
+    _emit_event("agent_start", agent_key, step, total,
+                message=f"Starting {AGENT_DESCRIPTIONS.get(agent_key, (agent_key, ''))[0]}...")
+    t0 = time.time()
     try:
         result = agent_module.run(context)
-        _log(f"    ✓ {agent_name}: {result.get('summary', '')[:120]}")
+        dur = int((time.time() - t0) * 1000)
+        summary = result.get("summary", "")[:200]
+        conf = result.get("confidence")
+        _emit_event("agent_done", agent_key, step, total,
+                    message=summary, confidence=conf, duration_ms=dur)
         return result
     except Exception as e:
-        _log(f"    ✗ {agent_name} failed: {e}")
+        dur = int((time.time() - t0) * 1000)
+        _emit_event("agent_error", agent_key, step, total,
+                    message=f"Failed: {str(e)[:150]}", duration_ms=dur)
         return {
-            "agent": agent_name,
+            "agent": agent_key,
             "summary": f"Agent failed: {str(e)[:100]}",
             "error": str(e),
         }
+
 
 
 def _synthesize_narrative(
@@ -250,33 +312,42 @@ def run_causal_pipeline(max_per_source: int = 14) -> Dict[str, Any]:
     """
     now = datetime.now(IST)
     selected_model = os.getenv("OPENAI_MODEL_AGENT", "gpt-4o-mini")
+    TOTAL = 12  # total pipeline steps
 
-    _log(f"\n{'='*60}")
-    _log(f"CAUSALEDGE AI — Self-Evolving Agent Pipeline")
-    _log(f"{now.strftime('%Y-%m-%d %H:%M IST')} | Model: {selected_model}")
-    _log(f"{'='*60}")
+    # Clear previous events
+    event_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "pipeline_events.jsonl")
+    try:
+        open(event_path, "w").close()
+    except Exception:
+        pass
+
+    _emit_event("pipeline_start", "pipeline", 0, TOTAL,
+                message=f"Starting CausalEdge AI pipeline · Model: {selected_model}")
 
     run_id = db.create_pipeline_run()
-    _log(f"  Pipeline run #{run_id}")
 
     # ── Agent 1: Macro Intelligence ──────────────────────────────
-    _log("\n  ── Agent 1: Macro Intelligence ──")
     from causal_agents import macro_agent
-    macro_result = _safe_run_agent(macro_agent, {}, "macro")
+    macro_result = _safe_run_agent(macro_agent, {}, "macro", step=1, total=TOTAL)
 
-    # ── Collect Headlines (same as before) ───────────────────────
-    _log("\n  ── Collecting Headlines ──")
+    # ── Collect Headlines ─────────────────────────────────────────
+    _emit_event("agent_start", "headlines", 2, TOTAL,
+                message=f"Fetching headlines from {len(RSS_MAP)} sources...")
+    t0 = time.time()
     rss_payload = json.loads(_exec_fetch_rss(["ALL"], max_per_source=int(max_per_source)))
     rss_headlines = [h for h in rss_payload.get("headlines", []) if isinstance(h, dict) and h.get("title")]
     titles = [h["title"] for h in rss_headlines]
-    _log(f"    RSS fetched: {len(titles)} headlines across {len(RSS_MAP)} sources")
+    _emit_event("agent_thinking", "headlines", 2, TOTAL,
+                message=f"Fetched {len(titles)} headlines · now AI-classifying each one...")
+
 
     # Analyze headlines in batches
     macro_text = format_macro_context_for_gpt(macro_result.get("macro_data", {}))
     analyzed_all: list = []
     for i in range(0, len(titles), 30):
         batch = titles[i:i + 30]
-        _log(f"    Analyzing batch {i // 30 + 1}: {len(batch)} items")
+        _emit_event("agent_thinking", "headlines", 2, TOTAL,
+                    message=f"Classifying batch {i // 30 + 1}: {len(batch)} headlines (sector, sentiment, impact, catalyst)...")
         payload = json.loads(_exec_analyze_batch(batch, macro_text))
         batch_analyzed = payload.get("analyzed", []) if isinstance(payload, dict) else []
         if not isinstance(batch_analyzed, list):
@@ -285,6 +356,10 @@ def run_causal_pipeline(max_per_source: int = 14) -> Dict[str, Any]:
             batch_analyzed.extend([{}] * (len(batch) - len(batch_analyzed)))
         analyzed_all.extend(batch_analyzed[:len(batch)])
     analyzed_all = analyzed_all[:len(titles)]
+    dur = int((time.time() - t0) * 1000)
+    _emit_event("agent_done", "headlines", 2, TOTAL,
+                message=f"Classified {len(titles)} headlines across {len(RSS_MAP)} sources",
+                duration_ms=dur)
 
     # Merge analyzed results onto raw RSS headlines
     now_pub = now.strftime("%Y-%m-%d %H:%M:%S IST")
@@ -337,66 +412,64 @@ def run_causal_pipeline(max_per_source: int = 14) -> Dict[str, Any]:
     }
 
     # ── Agent 2: Supply Chain ────────────────────────────────────
-    _log("\n  ── Agent 2: Supply Chain Graph ──")
     from causal_agents import supply_chain_agent
-    supply_result = _safe_run_agent(supply_chain_agent, context, "supply_chain")
+    supply_result = _safe_run_agent(supply_chain_agent, context, "supply_chain", step=3, total=TOTAL)
     context["supply_chain_result"] = supply_result
 
     # ── Agent 3: Behavioral Psychology ───────────────────────────
-    _log("\n  ── Agent 3: Behavioral Psychology ──")
     from causal_agents import behavioral_agent
-    behavioral_result = _safe_run_agent(behavioral_agent, context, "behavioral")
+    behavioral_result = _safe_run_agent(behavioral_agent, context, "behavioral", step=4, total=TOTAL)
     context["behavioral_result"] = behavioral_result
 
     # ── Agent 4: Institutional Flow ──────────────────────────────
-    _log("\n  ── Agent 4: Institutional Flow ──")
     from causal_agents import flow_agent
-    flow_result = _safe_run_agent(flow_agent, context, "flow")
+    flow_result = _safe_run_agent(flow_agent, context, "flow", step=5, total=TOTAL)
     context["flow_result"] = flow_result
 
     # ── Agent 5: Historical Analogy ──────────────────────────────
-    _log("\n  ── Agent 5: Historical Analogy ──")
     from causal_agents import historical_analog_agent
-    historical_result = _safe_run_agent(historical_analog_agent, context, "historical_analog")
+    historical_result = _safe_run_agent(historical_analog_agent, context, "historical_analog", step=6, total=TOTAL)
     context["historical_result"] = historical_result
 
     # ── Agent 6: Temporal Delay ──────────────────────────────────
-    _log("\n  ── Agent 6: Temporal Delay ──")
     from causal_agents import temporal_delay_agent
-    temporal_result = _safe_run_agent(temporal_delay_agent, context, "temporal_delay")
+    temporal_result = _safe_run_agent(temporal_delay_agent, context, "temporal_delay", step=7, total=TOTAL)
     context["temporal_result"] = temporal_result
 
     # ── Agent 7: Noise Filter ────────────────────────────────────
-    _log("\n  ── Agent 7: Noise Filter ──")
     from causal_agents import noise_filter_agent
-    noise_result = _safe_run_agent(noise_filter_agent, context, "noise_filter")
+    noise_result = _safe_run_agent(noise_filter_agent, context, "noise_filter", step=8, total=TOTAL)
     context["noise_result"] = noise_result
 
     # ── Agent 8: Contradiction (LLM call) ────────────────────────
-    _log("\n  ── Agent 8: Contradiction ──")
     from causal_agents import contradiction_agent
-    contradiction_result = _safe_run_agent(contradiction_agent, context, "contradiction")
+    contradiction_result = _safe_run_agent(contradiction_agent, context, "contradiction", step=9, total=TOTAL)
     context["contradiction_result"] = contradiction_result
 
     # ── Agent 9: Self-Evaluation ─────────────────────────────────
-    _log("\n  ── Agent 9: Self-Evaluation ──")
     from causal_agents import self_eval_agent
-    self_eval_result = _safe_run_agent(self_eval_agent, context, "self_eval")
+    self_eval_result = _safe_run_agent(self_eval_agent, context, "self_eval", step=10, total=TOTAL)
 
     # ── Agent 10: Meta-Supervisor (Self-Evolving) ────────────────
-    _log("\n  ── Agent 10: Meta-Supervisor ──")
     from causal_agents import meta_supervisor
     context["final_confidence"] = macro_result.get("confidence", 60)
-    meta_result = _safe_run_agent(meta_supervisor, context, "meta_supervisor")
+    meta_result = _safe_run_agent(meta_supervisor, context, "meta_supervisor", step=11, total=TOTAL)
 
     # ── Synthesize Unified Thesis ────────────────────────────────
-    _log("\n  ── Synthesizing Unified Thesis ──")
+    _emit_event("agent_start", "synthesis", 12, TOTAL,
+                message="Combining all 10 agents into a unified thesis...")
+    t_synth = time.time()
     today_output = _synthesize_narrative(
         macro_result, supply_result, behavioral_result, flow_result,
         historical_result, temporal_result, noise_result,
         contradiction_result, self_eval_result,
         sector_df,
     )
+    dur_synth = int((time.time() - t_synth) * 1000)
+    _emit_event("agent_done", "synthesis", 12, TOTAL,
+                message=f"Mood: {today_output.get('mood', 'mixed')} | Confidence: {today_output.get('confidence', 50)}%",
+                confidence=today_output.get("confidence"),
+                duration_ms=dur_synth)
 
     # Apply meta-supervisor confidence penalty (anti-delusion)
     meta_penalty = meta_result.get("confidence_penalty", 0)
@@ -518,5 +591,6 @@ def run_causal_pipeline(max_per_source: int = 14) -> Dict[str, Any]:
     except Exception as e:
         _log(f"  [!] Failed to save agent_result.json: {e}")
 
-    _log(f"\n  ✅ CausalEdge pipeline complete. {len(scored_df)} headlines | {len(sector_df)} sectors | regime={regime}")
+    _emit_event("pipeline_done", "pipeline", TOTAL, TOTAL,
+                message=f"Pipeline complete. {len(scored_df)} headlines | {len(sector_df)} sectors | regime={regime}")
     return result

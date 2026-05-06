@@ -581,30 +581,32 @@ def view_logs(request: Request):
         return {"logs": f.read()[-5000:]}
 
 # ── PUBLIC STREAM: "agent thinking" / live pipeline logs (SSE) ─────
+EVENTS_FILE = os.path.join(DATA_DIR, "pipeline_events.jsonl")
+
 @app.get("/api/pipeline/stream")
 def stream_pipeline_logs():
     """
-    Server-Sent Events stream of pipeline logs.
-    This is intentionally read-only and contains no secrets; it powers the optional "Show agent thinking" UI.
+    Server-Sent Events stream of structured pipeline events.
+    Each event is a JSON object with type, agent, message, confidence, etc.
+    Powers the Claude/Gemini-style "agent thinking" UI.
     """
     def event_generator():
-        # Ensure file exists so EventSource doesn't immediately fail.
-        if not os.path.exists(LOG_FILE):
+        # If events file doesn't exist, fall back to raw log
+        target = EVENTS_FILE if os.path.exists(EVENTS_FILE) else LOG_FILE
+        if not os.path.exists(target):
             yield "event: status\ndata: No pipeline logs yet. Run the pipeline.\n\n"
             return
 
         try:
-            with open(LOG_FILE, "r", encoding="utf-8", errors="ignore") as f:
-                # Start at end so new viewers don't download huge logs.
+            with open(target, "r", encoding="utf-8", errors="ignore") as f:
                 f.seek(0, os.SEEK_END)
                 while True:
                     line = f.readline()
                     if line:
-                        # SSE requires each event end with a blank line.
                         msg = line.rstrip("\n").replace("\r", "")
                         yield f"data: {msg}\n\n"
                     else:
-                        time.sleep(0.5)
+                        time.sleep(0.4)
         except Exception as e:
             yield f"event: error\ndata: Stream error: {str(e)[:120]}\n\n"
 
@@ -614,10 +616,29 @@ def stream_pipeline_logs():
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            # Render/proxies sometimes buffer; this helps streaming.
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@app.get("/api/pipeline/events")
+def get_pipeline_events():
+    """Return all structured events from the current/last pipeline run (for polling)."""
+    if not os.path.exists(EVENTS_FILE):
+        return {"events": [], "count": 0}
+    events = []
+    try:
+        with open(EVENTS_FILE, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        events.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        events.append({"type": "log", "message": line})
+    except Exception:
+        pass
+    return {"events": events, "count": len(events)}
 
 @app.post("/api/admin/backtest")
 def trigger_backtest(request: Request):
