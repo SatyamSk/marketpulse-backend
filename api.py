@@ -654,10 +654,11 @@ def get_today():
     """
     Single endpoint for the 'Today' page.
     Returns plain-English market intelligence with no jargon.
+    Includes live stock prices from Indian Stock Market API.
     """
     result_path = os.path.join(DATA_DIR, "agent_result.json")
     if not os.path.exists(result_path):
-        # No agent result yet — return a helpful empty state
+        # No agent result yet — return empty state with live stock prices
         return {
             "mood": "waiting",
             "mood_color": "amber",
@@ -670,6 +671,7 @@ def get_today():
             "invalidation": "",
             "signal_quality": "none",
             "last_updated": None,
+            "stocks": _get_stock_data_for_today({}),
         }
 
     with open(result_path, "r") as f:
@@ -677,10 +679,11 @@ def get_today():
 
     # If the new causal pipeline produced a "today" key, use it directly
     if "today" in data:
-        return data["today"]
+        today = data["today"]
+        today["stocks"] = _get_stock_data_for_today(data)
+        return today
 
     # Backward compatibility: old agent_result.json format
-    # Convert to the "today" format
     regime = data.get("regime", "Risk Off")
     mood_map = {
         "Risk On": ("cautiously positive", "green"),
@@ -702,7 +705,35 @@ def get_today():
         "invalidation": data.get("invalidations", [""])[0] if isinstance(data.get("invalidations"), list) and data.get("invalidations") else "",
         "signal_quality": data.get("data_quality", "medium"),
         "last_updated": data.get("timestamp"),
+        "stocks": _get_stock_data_for_today(data),
     }
+
+
+def _get_stock_data_for_today(data: dict) -> dict:
+    """Fetch live stock data based on today's analysis."""
+    try:
+        import stock_api
+        headlines = []
+        if "full_analysis" in data:
+            fa = data["full_analysis"]
+            headlines = fa.get("headlines", [])
+        if not headlines:
+            try:
+                with db.get_db() as conn:
+                    rows = conn.execute(
+                        "SELECT title FROM headlines ORDER BY created_at DESC LIMIT 200"
+                    ).fetchall()
+                    headlines = [{"title": r["title"]} for r in rows]
+            except Exception:
+                headlines = []
+
+        sector_data = []
+        if "full_analysis" in data:
+            sector_data = data["full_analysis"].get("sector_data", [])
+
+        return stock_api.get_stocks_for_today(headlines, sector_data)
+    except Exception as e:
+        return {"bellwethers": [], "mentioned": [], "sector_picks": [], "error": str(e)[:100]}
 
 
 # ── ANALYSIS: Deep Dive Data ──────────────────────────────────────
@@ -716,7 +747,6 @@ def get_analysis_agents():
         data = json.load(f)
     if "full_analysis" in data and "agents" in data["full_analysis"]:
         return {"agents": data["full_analysis"]["agents"], "timestamp": data.get("timestamp")}
-    # Backward compatibility
     return {"agents": {}, "timestamp": data.get("timestamp"), "legacy": True}
 
 
@@ -755,7 +785,6 @@ def get_analysis_regime():
             "macro_risk_score": data.get("macro", {}).get("macro_risk_score", 0),
         }
 
-    # Historical regimes from predictions table
     history = []
     try:
         with db.get_db() as conn:
@@ -769,7 +798,57 @@ def get_analysis_regime():
     return {"current": current, "history": history}
 
 
+# ── LIVE STOCKS: Real-Time Indian Stock Data ──────────────────────
+@app.get("/api/stocks/live")
+def get_stocks_live(symbols: str = ""):
+    """
+    Fetch live stock data.
+    If no symbols given, returns bellwether stocks.
+    ?symbols=RELIANCE,TCS,INFY for specific stocks.
+    """
+    import stock_api
+    if symbols:
+        sym_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+        stocks = stock_api.fetch_stocks_batch(sym_list[:15])
+        return {"stocks": stocks, "count": len(stocks)}
+    else:
+        return stock_api.get_market_snapshot()
+
+
+@app.get("/api/stocks/search-live")
+def search_stocks_live(q: str = ""):
+    """Search for Indian stocks by company name."""
+    import stock_api
+    if not q or len(q) < 2:
+        return {"results": [], "query": q}
+    results = stock_api.search_stock(q)
+    return {"results": results, "query": q}
+
+
+@app.get("/api/stocks/sectors")
+def get_sector_stocks_live(sector: str = ""):
+    """Get live stock data for a specific sector."""
+    import stock_api
+    if not sector:
+        return {"stocks": [], "sector": sector}
+    stocks = stock_api.get_sector_stocks(sector)
+    result = []
+    for s in stocks:
+        result.append({
+            "symbol": s.get("symbol", ""),
+            "name": stock_api._short_name(s.get("company_name", "")),
+            "price": s.get("last_price", 0),
+            "change": s.get("change", 0),
+            "pct_change": round(s.get("percent_change", 0), 2),
+            "volume": s.get("volume", 0),
+            "pe_ratio": s.get("pe_ratio"),
+            "sector": s.get("sector", ""),
+        })
+    return {"stocks": result, "sector": sector}
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=False)
+
 
