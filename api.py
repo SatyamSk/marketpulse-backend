@@ -648,6 +648,128 @@ def trigger_reflection(request: Request):
 # ── REMOVED: /api/pipeline/force-run (security vulnerability) ─────
 # ── REMOVED: /api/logs/marketpulse-secret-view (security vulnerability) ──
 
+# ── TODAY: Plain-English Intelligence ──────────────────────────────
+@app.get("/api/today")
+def get_today():
+    """
+    Single endpoint for the 'Today' page.
+    Returns plain-English market intelligence with no jargon.
+    """
+    result_path = os.path.join(DATA_DIR, "agent_result.json")
+    if not os.path.exists(result_path):
+        # No agent result yet — return a helpful empty state
+        return {
+            "mood": "waiting",
+            "mood_color": "amber",
+            "confidence": 0,
+            "narrative": "No analysis has been run yet. Go to Admin and run the agent pipeline to generate today's intelligence.",
+            "drivers": [],
+            "sectors": [],
+            "hidden_signals": [],
+            "what_could_go_wrong": [],
+            "invalidation": "",
+            "signal_quality": "none",
+            "last_updated": None,
+        }
+
+    with open(result_path, "r") as f:
+        data = json.load(f)
+
+    # If the new causal pipeline produced a "today" key, use it directly
+    if "today" in data:
+        return data["today"]
+
+    # Backward compatibility: old agent_result.json format
+    # Convert to the "today" format
+    regime = data.get("regime", "Risk Off")
+    mood_map = {
+        "Risk On": ("cautiously positive", "green"),
+        "Risk Off": ("cautious", "amber"),
+        "Panic": ("fearful", "red"),
+        "Complacent": ("mixed", "amber"),
+    }
+    mood, mood_color = mood_map.get(regime, ("mixed", "amber"))
+
+    return {
+        "mood": mood,
+        "mood_color": mood_color,
+        "confidence": data.get("regime_confidence", 50),
+        "narrative": data.get("top_insight", "Run the pipeline to get today's analysis."),
+        "drivers": [],
+        "sectors": [],
+        "hidden_signals": [],
+        "what_could_go_wrong": data.get("invalidations", [])[:3] if isinstance(data.get("invalidations"), list) else [],
+        "invalidation": data.get("invalidations", [""])[0] if isinstance(data.get("invalidations"), list) and data.get("invalidations") else "",
+        "signal_quality": data.get("data_quality", "medium"),
+        "last_updated": data.get("timestamp"),
+    }
+
+
+# ── ANALYSIS: Deep Dive Data ──────────────────────────────────────
+@app.get("/api/analysis/agents")
+def get_analysis_agents():
+    """Return each agent's full reasoning for the Full Analysis page."""
+    result_path = os.path.join(DATA_DIR, "agent_result.json")
+    if not os.path.exists(result_path):
+        raise HTTPException(status_code=404, detail="No analysis available. Run the pipeline first.")
+    with open(result_path, "r") as f:
+        data = json.load(f)
+    if "full_analysis" in data and "agents" in data["full_analysis"]:
+        return {"agents": data["full_analysis"]["agents"], "timestamp": data.get("timestamp")}
+    # Backward compatibility
+    return {"agents": {}, "timestamp": data.get("timestamp"), "legacy": True}
+
+
+@app.get("/api/analysis/causal")
+def get_analysis_causal():
+    """Return causal chain data for visualization."""
+    result_path = os.path.join(DATA_DIR, "agent_result.json")
+    if not os.path.exists(result_path):
+        raise HTTPException(status_code=404, detail="No analysis available.")
+    with open(result_path, "r") as f:
+        data = json.load(f)
+    agents = data.get("full_analysis", {}).get("agents", {})
+    supply = agents.get("supply_chain", {})
+    return {
+        "chains": supply.get("chains", []),
+        "delayed_effects": supply.get("delayed_effects", []),
+        "beneficiaries": supply.get("beneficiaries", []),
+        "victims": supply.get("victims", []),
+        "triggered_entities": supply.get("triggered_entities", []),
+        "timestamp": data.get("timestamp"),
+    }
+
+
+@app.get("/api/analysis/regime")
+def get_analysis_regime():
+    """Return regime details and history."""
+    result_path = os.path.join(DATA_DIR, "agent_result.json")
+    current = {}
+    if os.path.exists(result_path):
+        with open(result_path, "r") as f:
+            data = json.load(f)
+        current = {
+            "regime": data.get("regime", "Risk Off"),
+            "confidence": data.get("regime_confidence", 50),
+            "mood": data.get("today", {}).get("mood", "mixed"),
+            "macro_risk_score": data.get("macro", {}).get("macro_risk_score", 0),
+        }
+
+    # Historical regimes from predictions table
+    history = []
+    try:
+        with db.get_db() as conn:
+            rows = conn.execute(
+                "SELECT date, predicted_regime, predicted_nss, predicted_avg_risk, was_regime_correct FROM predictions ORDER BY date DESC LIMIT 30"
+            ).fetchall()
+            history = [dict(r) for r in rows]
+    except Exception:
+        pass
+
+    return {"current": current, "history": history}
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=False)
+

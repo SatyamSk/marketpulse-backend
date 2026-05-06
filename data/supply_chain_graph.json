@@ -1,0 +1,182 @@
+{
+  "entities": [
+    {"id": "crude_oil", "type": "commodity", "name": "Crude Oil", "aliases": ["brent", "crude", "oil", "petroleum"]},
+    {"id": "natural_gas", "type": "commodity", "name": "Natural Gas", "aliases": ["gas", "LNG"]},
+    {"id": "steel", "type": "commodity", "name": "Steel", "aliases": ["iron ore", "steel prices"]},
+    {"id": "copper", "type": "commodity", "name": "Copper", "aliases": ["copper prices"]},
+    {"id": "aluminium", "type": "commodity", "name": "Aluminium", "aliases": ["aluminum"]},
+    {"id": "gold", "type": "commodity", "name": "Gold", "aliases": ["gold prices", "bullion"]},
+    {"id": "rare_earth", "type": "commodity", "name": "Rare Earth Metals", "aliases": ["rare earth", "lithium", "cobalt"]},
+    {"id": "coal", "type": "commodity", "name": "Coal", "aliases": ["thermal coal", "coking coal"]},
+    {"id": "wheat", "type": "commodity", "name": "Wheat", "aliases": ["grain", "food grain"]},
+    {"id": "sugar", "type": "commodity", "name": "Sugar", "aliases": ["sugar prices"]},
+    {"id": "cotton", "type": "commodity", "name": "Cotton", "aliases": ["cotton prices"]},
+    {"id": "rubber", "type": "commodity", "name": "Rubber", "aliases": ["natural rubber"]},
+    {"id": "semiconductor", "type": "commodity", "name": "Semiconductors", "aliases": ["chips", "chip shortage", "semiconductor"]},
+
+    {"id": "banking", "type": "sector", "name": "Banking", "aliases": ["banks", "HDFC", "ICICI", "SBI", "Kotak", "Axis"]},
+    {"id": "it", "type": "sector", "name": "IT", "aliases": ["TCS", "Infosys", "Wipro", "HCL", "Tech Mahindra", "software", "tech"]},
+    {"id": "energy", "type": "sector", "name": "Energy", "aliases": ["ONGC", "Reliance", "BPCL", "HPCL", "IOC", "power", "electricity"]},
+    {"id": "fmcg", "type": "sector", "name": "FMCG", "aliases": ["HUL", "ITC", "Nestle", "Dabur", "consumer goods"]},
+    {"id": "pharma", "type": "sector", "name": "Healthcare", "aliases": ["pharma", "Sun Pharma", "Dr Reddy", "Cipla", "hospitals"]},
+    {"id": "auto", "type": "sector", "name": "Manufacturing", "aliases": ["auto", "Tata Motors", "Maruti", "M&M", "Bajaj", "automobile"]},
+    {"id": "fintech", "type": "sector", "name": "Fintech", "aliases": ["Paytm", "PhonePe", "CRED", "digital payments", "UPI"]},
+    {"id": "startup", "type": "sector", "name": "Startup", "aliases": ["unicorn", "funding round", "startup"]},
+    {"id": "retail", "type": "sector", "name": "Retail", "aliases": ["Avenue", "DMart", "Reliance Retail", "consumer"]},
+    {"id": "realty", "type": "sector", "name": "Realty", "aliases": ["real estate", "DLF", "Godrej Properties", "housing"]},
+    {"id": "infra", "type": "sector", "name": "Infrastructure", "aliases": ["construction", "L&T", "roads", "railways", "highways"]},
+    {"id": "defence", "type": "sector", "name": "Defence", "aliases": ["HAL", "BEL", "defence", "military", "Bharat Dynamics"]},
+    {"id": "telecom", "type": "sector", "name": "Telecom", "aliases": ["Airtel", "Jio", "Vi", "Vodafone", "5G", "spectrum"]},
+    {"id": "aviation", "type": "sector", "name": "Aviation", "aliases": ["IndiGo", "Air India", "SpiceJet", "airlines", "flights"]},
+    {"id": "paint", "type": "sector", "name": "Paint", "aliases": ["Asian Paints", "Berger", "Kansai Nerolac"]},
+    {"id": "logistics", "type": "sector", "name": "Logistics", "aliases": ["shipping", "ports", "Adani Ports", "freight", "supply chain"]},
+    {"id": "cement", "type": "sector", "name": "Cement", "aliases": ["UltraTech", "Shree Cement", "ACC", "Ambuja"]},
+    {"id": "ev", "type": "sector", "name": "EV", "aliases": ["electric vehicle", "Ola Electric", "Tata EV", "battery"]},
+    {"id": "renewables", "type": "sector", "name": "Renewables", "aliases": ["solar", "wind", "green energy", "Adani Green"]},
+    {"id": "insurance", "type": "sector", "name": "Insurance", "aliases": ["LIC", "HDFC Life", "SBI Life", "ICICI Prudential"]},
+    {"id": "textile", "type": "sector", "name": "Textile", "aliases": ["garment", "apparel", "Raymond"]},
+    {"id": "fertilizer", "type": "sector", "name": "Fertilizer", "aliases": ["urea", "Chambal Fertilizers", "GNFC"]},
+    {"id": "electrical", "type": "sector", "name": "Electrical Equipment", "aliases": ["transformer", "switchgear", "ABB", "Siemens", "power equipment"]},
+
+    {"id": "rbi", "type": "policy", "name": "RBI", "aliases": ["Reserve Bank", "monetary policy", "repo rate", "interest rate"]},
+    {"id": "sebi", "type": "policy", "name": "SEBI", "aliases": ["market regulator", "FPI rules"]},
+    {"id": "govt_fiscal", "type": "policy", "name": "Government Fiscal Policy", "aliases": ["budget", "fiscal deficit", "GST", "tax"]},
+    {"id": "import_duty", "type": "policy", "name": "Import Duty", "aliases": ["customs", "tariff", "duty hike", "anti-dumping"]},
+    {"id": "pli", "type": "policy", "name": "PLI Scheme", "aliases": ["production linked incentive", "Make in India"]},
+    {"id": "fed", "type": "policy", "name": "US Federal Reserve", "aliases": ["Fed", "FOMC", "Jerome Powell", "US rates"]},
+
+    {"id": "inr", "type": "currency", "name": "Indian Rupee", "aliases": ["INR", "rupee", "INR/USD"]},
+    {"id": "usd", "type": "currency", "name": "US Dollar", "aliases": ["dollar", "DXY", "greenback"]},
+
+    {"id": "fii", "type": "flow", "name": "Foreign Institutional Investors", "aliases": ["FII", "FPI", "foreign funds"]},
+    {"id": "dii", "type": "flow", "name": "Domestic Institutional Investors", "aliases": ["DII", "mutual funds", "domestic funds"]}
+  ],
+
+  "relationships": [
+    {"source": "crude_oil", "target": "energy", "type": "drives", "direction": "positive", "strength": 0.9, "delay_hours": 0, "plain": "When crude rises, energy sector revenues increase"},
+    {"source": "crude_oil", "target": "aviation", "type": "cost_pressure", "direction": "negative", "strength": 0.85, "delay_hours": 0, "plain": "Higher crude = higher fuel costs = aviation margins squeezed"},
+    {"source": "crude_oil", "target": "paint", "type": "cost_pressure", "direction": "negative", "strength": 0.75, "delay_hours": 24, "plain": "Crude derivatives are raw materials for paint companies"},
+    {"source": "crude_oil", "target": "logistics", "type": "cost_pressure", "direction": "negative", "strength": 0.7, "delay_hours": 24, "plain": "Higher fuel costs hit transportation margins"},
+    {"source": "crude_oil", "target": "fmcg", "type": "cost_pressure", "direction": "negative", "strength": 0.5, "delay_hours": 720, "plain": "Crude impacts packaging and distribution costs for FMCG"},
+    {"source": "crude_oil", "target": "inr", "type": "weakens", "direction": "negative", "strength": 0.7, "delay_hours": 4, "plain": "India imports 85% of its oil — higher crude weakens the rupee"},
+    {"source": "crude_oil", "target": "rbi", "type": "pressures", "direction": "negative", "strength": 0.6, "delay_hours": 720, "plain": "Crude spike → inflation → RBI may tighten rates"},
+
+    {"source": "steel", "target": "auto", "type": "cost_pressure", "direction": "negative", "strength": 0.8, "delay_hours": 168, "plain": "Steel is a major input cost for auto manufacturers"},
+    {"source": "steel", "target": "infra", "type": "cost_pressure", "direction": "negative", "strength": 0.75, "delay_hours": 168, "plain": "Construction and infrastructure need steel — higher prices hurt margins"},
+    {"source": "steel", "target": "realty", "type": "cost_pressure", "direction": "negative", "strength": 0.7, "delay_hours": 336, "plain": "Real estate construction costs rise with steel prices"},
+    {"source": "steel", "target": "cement", "type": "co_demand", "direction": "positive", "strength": 0.6, "delay_hours": 0, "plain": "Steel and cement often move together on infrastructure demand"},
+
+    {"source": "copper", "target": "electrical", "type": "cost_pressure", "direction": "negative", "strength": 0.8, "delay_hours": 168, "plain": "Copper is the primary raw material for electrical equipment"},
+    {"source": "copper", "target": "ev", "type": "cost_pressure", "direction": "negative", "strength": 0.7, "delay_hours": 168, "plain": "EVs use 3-4x more copper than traditional vehicles"},
+    {"source": "copper", "target": "renewables", "type": "cost_pressure", "direction": "negative", "strength": 0.65, "delay_hours": 336, "plain": "Solar and wind installations require significant copper wiring"},
+
+    {"source": "rare_earth", "target": "ev", "type": "critical_input", "direction": "negative", "strength": 0.85, "delay_hours": 168, "plain": "EV motors need rare earth magnets — shortage disrupts production"},
+    {"source": "rare_earth", "target": "defence", "type": "critical_input", "direction": "negative", "strength": 0.6, "delay_hours": 336, "plain": "Defence electronics depend on rare earth elements"},
+
+    {"source": "semiconductor", "target": "it", "type": "enables", "direction": "positive", "strength": 0.6, "delay_hours": 336, "plain": "Chip availability drives IT hardware and cloud expansion"},
+    {"source": "semiconductor", "target": "auto", "type": "bottleneck", "direction": "negative", "strength": 0.75, "delay_hours": 168, "plain": "Modern vehicles need 1000+ chips — shortage halts production"},
+    {"source": "semiconductor", "target": "telecom", "type": "enables", "direction": "positive", "strength": 0.5, "delay_hours": 336, "plain": "5G rollout depends on chip supply for equipment"},
+
+    {"source": "rbi", "target": "banking", "type": "rate_impact", "direction": "mixed", "strength": 0.9, "delay_hours": 0, "plain": "Rate hikes boost bank NIMs short-term but may slow loan growth"},
+    {"source": "rbi", "target": "realty", "type": "rate_impact", "direction": "negative", "strength": 0.8, "delay_hours": 24, "plain": "Higher rates = costlier home loans = slower real estate demand"},
+    {"source": "rbi", "target": "auto", "type": "rate_impact", "direction": "negative", "strength": 0.6, "delay_hours": 168, "plain": "Higher EMIs reduce vehicle purchases"},
+    {"source": "rbi", "target": "it", "type": "rate_impact", "direction": "negative", "strength": 0.4, "delay_hours": 336, "plain": "Rate hikes compress valuation multiples for growth sectors"},
+    {"source": "rbi", "target": "insurance", "type": "rate_impact", "direction": "positive", "strength": 0.5, "delay_hours": 24, "plain": "Higher rates improve insurance company investment returns"},
+
+    {"source": "fed", "target": "fii", "type": "flow_impact", "direction": "negative", "strength": 0.8, "delay_hours": 4, "plain": "US rate hikes pull FII money back to US markets"},
+    {"source": "fed", "target": "inr", "type": "weakens", "direction": "negative", "strength": 0.7, "delay_hours": 4, "plain": "US rate hikes strengthen dollar, weaken rupee"},
+    {"source": "fed", "target": "it", "type": "client_impact", "direction": "negative", "strength": 0.5, "delay_hours": 720, "plain": "Higher US rates slow tech spending = fewer IT outsourcing deals"},
+
+    {"source": "inr", "target": "it", "type": "export_benefit", "direction": "positive_on_weak", "strength": 0.75, "delay_hours": 0, "plain": "Weak rupee boosts IT export revenues when converted to INR"},
+    {"source": "inr", "target": "pharma", "type": "export_benefit", "direction": "positive_on_weak", "strength": 0.6, "delay_hours": 24, "plain": "Pharma companies with US/EU revenues benefit from weak rupee"},
+    {"source": "inr", "target": "fmcg", "type": "import_cost", "direction": "negative_on_weak", "strength": 0.4, "delay_hours": 168, "plain": "FMCG companies importing palm oil, inputs face higher costs"},
+
+    {"source": "fii", "target": "banking", "type": "flow_target", "direction": "positive", "strength": 0.8, "delay_hours": 0, "plain": "FIIs hold large banking positions — their flows move the sector"},
+    {"source": "fii", "target": "it", "type": "flow_target", "direction": "positive", "strength": 0.7, "delay_hours": 0, "plain": "IT is a major FII holding — outflows hit IT disproportionately"},
+    {"source": "dii", "target": "banking", "type": "support", "direction": "positive", "strength": 0.6, "delay_hours": 0, "plain": "DIIs often buy banking dips, providing support"},
+
+    {"source": "import_duty", "target": "steel", "type": "protects_domestic", "direction": "positive", "strength": 0.8, "delay_hours": 0, "plain": "Import duty on steel protects domestic producers, raises prices"},
+    {"source": "import_duty", "target": "auto", "type": "cost_impact", "direction": "negative", "strength": 0.6, "delay_hours": 168, "plain": "Higher import duties on components raise manufacturing costs"},
+
+    {"source": "pli", "target": "auto", "type": "incentive", "direction": "positive", "strength": 0.7, "delay_hours": 720, "plain": "PLI schemes incentivize domestic auto manufacturing"},
+    {"source": "pli", "target": "ev", "type": "incentive", "direction": "positive", "strength": 0.8, "delay_hours": 720, "plain": "EV PLI scheme boosts domestic EV production"},
+    {"source": "pli", "target": "semiconductor", "type": "incentive", "direction": "positive", "strength": 0.6, "delay_hours": 2160, "plain": "Semiconductor PLI aims to build domestic chip fabs — long-term"},
+    {"source": "pli", "target": "pharma", "type": "incentive", "direction": "positive", "strength": 0.65, "delay_hours": 720, "plain": "PLI for pharma promotes API manufacturing in India"},
+
+    {"source": "govt_fiscal", "target": "infra", "type": "capex_boost", "direction": "positive", "strength": 0.85, "delay_hours": 0, "plain": "Government capex spending directly flows to infrastructure"},
+    {"source": "govt_fiscal", "target": "cement", "type": "demand_boost", "direction": "positive", "strength": 0.7, "delay_hours": 168, "plain": "Infra spending drives cement demand"},
+    {"source": "govt_fiscal", "target": "steel", "type": "demand_boost", "direction": "positive", "strength": 0.7, "delay_hours": 168, "plain": "Infra spending drives steel demand"},
+    {"source": "govt_fiscal", "target": "defence", "type": "capex_boost", "direction": "positive", "strength": 0.8, "delay_hours": 0, "plain": "Defence budget allocation drives orders for HAL, BEL etc."},
+    {"source": "govt_fiscal", "target": "electrical", "type": "demand_boost", "direction": "positive", "strength": 0.65, "delay_hours": 720, "plain": "Power capex → transformer and switchgear demand rises months later"},
+
+    {"source": "gold", "target": "banking", "type": "flight_signal", "direction": "negative", "strength": 0.4, "delay_hours": 0, "plain": "Gold rally signals risk aversion — money moves from equities to safety"},
+    {"source": "gold", "target": "fmcg", "type": "safe_haven_proxy", "direction": "positive", "strength": 0.3, "delay_hours": 24, "plain": "Defensive sectors like FMCG benefit when gold signals risk-off mood"},
+
+    {"source": "coal", "target": "energy", "type": "fuel_source", "direction": "positive", "strength": 0.6, "delay_hours": 168, "plain": "Coal prices affect thermal power generation costs"},
+    {"source": "coal", "target": "cement", "type": "cost_pressure", "direction": "negative", "strength": 0.5, "delay_hours": 168, "plain": "Cement manufacturing is energy-intensive — coal prices matter"},
+
+    {"source": "cotton", "target": "textile", "type": "raw_material", "direction": "negative", "strength": 0.8, "delay_hours": 168, "plain": "Cotton is the primary input — price spikes squeeze textile margins"},
+    {"source": "rubber", "target": "auto", "type": "raw_material", "direction": "negative", "strength": 0.5, "delay_hours": 168, "plain": "Rubber prices affect tire and auto component costs"},
+
+    {"source": "wheat", "target": "fmcg", "type": "input_cost", "direction": "negative", "strength": 0.4, "delay_hours": 336, "plain": "Food grain prices impact packaged food companies"},
+    {"source": "sugar", "target": "fmcg", "type": "input_cost", "direction": "negative", "strength": 0.3, "delay_hours": 336, "plain": "Sugar prices affect beverage and confectionery companies"},
+
+    {"source": "sebi", "target": "fintech", "type": "regulation", "direction": "mixed", "strength": 0.7, "delay_hours": 0, "plain": "SEBI regulations on digital lending and payments affect fintech"},
+    {"source": "sebi", "target": "insurance", "type": "regulation", "direction": "mixed", "strength": 0.5, "delay_hours": 24, "plain": "Insurance regulatory changes affect product and distribution rules"},
+    {"source": "sebi", "target": "fii", "type": "regulation", "direction": "mixed", "strength": 0.8, "delay_hours": 0, "plain": "FPI regulation changes directly affect foreign fund flows"}
+  ],
+
+  "delayed_effect_templates": [
+    {
+      "trigger": "railway_capex",
+      "keywords": ["railway", "rail", "train", "track"],
+      "chain": [
+        {"entity": "infra", "delay": "immediate", "effect": "PSU railway stocks spike"},
+        {"entity": "steel", "delay": "1-2 weeks", "effect": "Steel demand expectations rise"},
+        {"entity": "electrical", "delay": "2-4 weeks", "effect": "Component suppliers (signalling, electrical) rerate"},
+        {"entity": "cement", "delay": "1-3 months", "effect": "Station/track construction drives cement demand"}
+      ]
+    },
+    {
+      "trigger": "datacenter_boom",
+      "keywords": ["datacenter", "data center", "cloud", "AI infrastructure", "GPU"],
+      "chain": [
+        {"entity": "it", "delay": "immediate", "effect": "IT services stocks react on deal flow hopes"},
+        {"entity": "energy", "delay": "1-3 months", "effect": "Power demand surge from datacenters"},
+        {"entity": "electrical", "delay": "2-6 months", "effect": "Transformer shortage → electrical equipment firms rerate"},
+        {"entity": "copper", "delay": "3-6 months", "effect": "Massive copper demand for datacenter wiring"}
+      ]
+    },
+    {
+      "trigger": "crude_spike",
+      "keywords": ["crude", "oil price", "OPEC", "oil supply"],
+      "chain": [
+        {"entity": "energy", "delay": "immediate", "effect": "OMCs hit on margin compression fears"},
+        {"entity": "aviation", "delay": "immediate", "effect": "Airline stocks sell off on fuel cost spike"},
+        {"entity": "paint", "delay": "1-2 days", "effect": "Paint companies affected via crude derivatives"},
+        {"entity": "rbi", "delay": "2-4 weeks", "effect": "Inflation pressure → RBI hawkish commentary"},
+        {"entity": "banking", "delay": "1-3 months", "effect": "Rate hike expectations hit rate-sensitive sectors"}
+      ]
+    },
+    {
+      "trigger": "rupee_depreciation",
+      "keywords": ["rupee", "INR", "currency", "forex"],
+      "chain": [
+        {"entity": "it", "delay": "immediate", "effect": "IT exporters benefit from weaker rupee"},
+        {"entity": "pharma", "delay": "1-2 days", "effect": "Pharma exporters see revenue boost"},
+        {"entity": "fmcg", "delay": "1-2 weeks", "effect": "Import-dependent FMCG faces higher input costs"},
+        {"entity": "fii", "delay": "immediate", "effect": "FII selling accelerates on currency loss fears"}
+      ]
+    },
+    {
+      "trigger": "rate_cut",
+      "keywords": ["rate cut", "repo rate", "monetary easing", "dovish"],
+      "chain": [
+        {"entity": "banking", "delay": "immediate", "effect": "Banks rally on improved NIM outlook"},
+        {"entity": "realty", "delay": "1-2 days", "effect": "Real estate benefits from cheaper home loans"},
+        {"entity": "auto", "delay": "1-2 weeks", "effect": "Lower EMIs boost vehicle demand expectations"},
+        {"entity": "infra", "delay": "2-4 weeks", "effect": "Cheaper borrowing boosts project financing"}
+      ]
+    }
+  ]
+}

@@ -177,6 +177,18 @@ def run_agent_pipeline(max_per_source: int = 14) -> Dict[str, Any]:
     selected_model = os.getenv("OPENAI_MODEL_AGENT", "gpt-4o-mini")
     _log(f"  Model: {selected_model}")
 
+    # ── Try the new 9-agent causal pipeline first ────────────────
+    try:
+        from causal_agents.orchestrator import run_causal_pipeline
+        _log("  ▶ Using CausalEdge 9-agent pipeline")
+        return run_causal_pipeline(max_per_source=max_per_source)
+    except Exception as e:
+        _log(f"  [!] Causal pipeline failed ({e}), falling back to legacy agent")
+        import traceback
+        _log(traceback.format_exc()[:500])
+
+    # ── Legacy fallback ──────────────────────────────────────────
+
     # create pipeline run
     run_id = db.create_pipeline_run()
     _log(f"  Pipeline run #{run_id} (autonomous_agent)")
